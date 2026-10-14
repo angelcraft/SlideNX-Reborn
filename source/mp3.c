@@ -1,58 +1,33 @@
-#include <errno.h>
 #include <malloc.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#include <mpg123.h>
 #include <switch.h>
 
+#define MINIMP3_IMPLEMENTATION
+#include "minimp3.h"
 #include "mp3.h"
 
-/* Audout requires page-aligned sample buffers. Keep the allocation and size
- * aligned to 0x1000, and pass the number of decoded bytes as data_size. */
-#define PCM_BUFFER_SIZE 0x10000
+#define PCM_BUFFER_SIZE 0x1000
 
 static uint8_t *g_pcm_buffer;
-static AudioOutBuffer g_audio_buffer;
-static bool g_mpg123_ready;
 static bool g_audout_ready;
 static bool g_audio_ready;
 
 int mp3SystemInit(void)
 {
     Result rc;
-
-    if (g_audio_ready)
-        return 0;
-
+    if (g_audio_ready) return 0;
     g_pcm_buffer = memalign(0x1000, PCM_BUFFER_SIZE);
-    if (g_pcm_buffer == NULL)
-        return -1;
-
-    if (mpg123_init() != MPG123_OK) {
-        free(g_pcm_buffer);
-        g_pcm_buffer = NULL;
-        return -1;
-    }
-    g_mpg123_ready = true;
-
+    if (!g_pcm_buffer) return -1;
     rc = audoutInitialize();
-    if (R_FAILED(rc)) {
-        mp3SystemExit();
-        return -1;
-    }
+    if (R_FAILED(rc)) { free(g_pcm_buffer); g_pcm_buffer = NULL; return -1; }
     g_audout_ready = true;
-
     if (audoutGetDeviceState() != AudioOutState_Started) {
         rc = audoutStartAudioOut();
-        if (R_FAILED(rc)) {
-            mp3SystemExit();
-            return -1;
-        }
+        if (R_FAILED(rc)) { mp3SystemExit(); return -1; }
     }
-
     g_audio_ready = true;
     return 0;
 }
@@ -60,91 +35,79 @@ int mp3SystemInit(void)
 void mp3SystemExit(void)
 {
     g_audio_ready = false;
-
     if (g_audout_ready) {
-        if (audoutGetDeviceState() == AudioOutState_Started)
-            (void)audoutStopAudioOut();
+        if (audoutGetDeviceState() == AudioOutState_Started) (void)audoutStopAudioOut();
         audoutExit();
         g_audout_ready = false;
     }
-
-    if (g_mpg123_ready) {
-        mpg123_exit();
-        g_mpg123_ready = false;
-    }
-
     free(g_pcm_buffer);
     g_pcm_buffer = NULL;
 }
 
 int playMp3(const char *file)
 {
-    mpg123_handle *decoder = NULL;
-    int err = MPG123_OK;
+    FILE *fp = NULL;
+    uint8_t *compressed = NULL;
+    long file_size;
+    size_t got;
     int result = -1;
-    long sample_rate;
-    int channels = 2;
-    int encoding = MPG123_ENC_SIGNED_16;
+    int offset = 0;
+    mp3dec_t decoder;
+    mp3dec_frame_info_t info;
+    mp3d_sample_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
 
-    if (!g_audio_ready || file == NULL || file[0] == '\0')
-        return -1;
+    if (!g_audio_ready || !file || !*file) return -1;
+    fp = fopen(file, "rb");
+    if (!fp) return -1;
+    if (fseek(fp, 0, SEEK_END) != 0 || (file_size = ftell(fp)) <= 0 ||
+        fseek(fp, 0, SEEK_SET) != 0) goto cleanup;
+    compressed = malloc((size_t)file_size);
+    if (!compressed) goto cleanup;
+    got = fread(compressed, 1, (size_t)file_size, fp);
+    if (got != (size_t)file_size) goto cleanup;
 
-    decoder = mpg123_new(NULL, &err);
-    if (decoder == NULL) {
-        return -1;
-    }
+    mp3dec_init(&decoder);
+    result = 0;
+    while (offset < file_size) {
+        int samples = mp3dec_decode_frame(&decoder, compressed + offset,
+                                          (int)(file_size - offset), pcm, &info);
+        if (info.frame_bytes <= 0) {
+            /* Skip invalid bytes so malformed files cannot stall forever. */
+            offset++;
+            continue;
+        }
+        offset += info.frame_bytes;
+        if (samples <= 0 || info.channels <= 0) continue;
 
-    sample_rate = (long)audoutGetSampleRate();
-    if (sample_rate <= 0)
-        goto cleanup;
-
-    /* Match audout's PCM contract explicitly. The original code used casts
-     * from a 32-bit rate / 8-bit channel variable to pointers expected to
-     * point to long / int; mpg123_getformat() could overwrite adjacent memory. */
-    if (mpg123_param(decoder, MPG123_FORCE_RATE, sample_rate, 0.0) != MPG123_OK)
-        goto cleanup;
-    if (mpg123_param(decoder, MPG123_FORCE_STEREO, 1, 0.0) != MPG123_OK)
-        goto cleanup;
-    if (mpg123_format_none(decoder) != MPG123_OK)
-        goto cleanup;
-    if (mpg123_format(decoder, sample_rate, channels, encoding) != MPG123_OK)
-        goto cleanup;
-    if (mpg123_open(decoder, file) != MPG123_OK)
-        goto cleanup;
-
-    for (;;) {
-        size_t bytes_read = 0;
-        int decode_status = mpg123_read(decoder, g_pcm_buffer, PCM_BUFFER_SIZE, &bytes_read);
-
-        if (bytes_read > 0) {
-            AudioOutBuffer *released = NULL;
-            memset(&g_audio_buffer, 0, sizeof(g_audio_buffer));
-            g_audio_buffer.buffer = g_pcm_buffer;
-            g_audio_buffer.buffer_size = PCM_BUFFER_SIZE;
-            g_audio_buffer.data_size = bytes_read;
-            g_audio_buffer.data_offset = 0;
-
-            /* Synchronous playback means we don't reuse the PCM allocation
-             * until audout has released it. This is intentionally simple and
-             * avoids the original double-buffer accounting bug. */
-            if (R_FAILED(audoutPlayBuffer(&g_audio_buffer, &released)))
-                goto cleanup;
+        /* libnx audio output expects aligned buffers. minimp3 emits signed 16-bit
+           PCM; mono frames are duplicated to stereo. Audio is submitted one
+           decoded frame at a time to keep memory use small. */
+        int16_t *out = (int16_t *)g_pcm_buffer;
+        size_t out_samples = (size_t)samples * 2;
+        if (out_samples * sizeof(int16_t) > PCM_BUFFER_SIZE) { result = -1; break; }
+        for (int i = 0; i < samples; i++) {
+            int16_t left = pcm[i * info.channels];
+            int16_t right = info.channels > 1 ? pcm[i * info.channels + 1] : left;
+            out[i * 2] = left;
+            out[i * 2 + 1] = right;
         }
 
-        if (decode_status == MPG123_DONE) {
-            result = 0;
-            break;
+        AudioOutBuffer audio = {0};
+        AudioOutBuffer *released = NULL;
+        audio.buffer = g_pcm_buffer;
+        audio.buffer_size = PCM_BUFFER_SIZE;
+        audio.data_size = out_samples * sizeof(int16_t);
+        audio.data_offset = 0;
+        if (R_FAILED(audoutPlayBuffer(&audio, &released))) { result = -1; break; }
+        /* Wait until audio service releases the buffer before reusing it. */
+        while (released == NULL) {
+            svcSleepThread(1000000ULL);
+            (void)audoutWaitPlayFinish(&released, 1, 100000000ULL);
         }
-        if (decode_status != MPG123_OK && decode_status != MPG123_NEW_FORMAT)
-            goto cleanup;
-        if (bytes_read == 0 && decode_status == MPG123_OK)
-            goto cleanup; /* Avoid a malformed stream causing a tight loop. */
     }
 
 cleanup:
-    if (decoder != NULL) {
-        (void)mpg123_close(decoder);
-        mpg123_delete(decoder);
-    }
+    free(compressed);
+    if (fp) fclose(fp);
     return result;
 }
