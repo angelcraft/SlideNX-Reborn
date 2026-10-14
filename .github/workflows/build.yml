@@ -1,0 +1,65 @@
+name: SlideNX Reborn build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install devkitPro toolchain
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl make git
+          curl -fsSL https://apt.devkitpro.org/install-devkitpro-pacman | sudo bash
+          sudo dkp-pacman -Syu --noconfirm
+          sudo dkp-pacman -S --noconfirm switch-dev switch-mpg123
+
+      - name: Build and stage SD package
+        shell: bash
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          export DEVKITARM="$DEVKITPRO/devkitARM"
+          export PATH="$DEVKITPRO/tools/bin:$DEVKITPRO/devkitA64/bin:$PATH"
+          chmod +x ./build_and_package.sh
+          ./build_and_package.sh
+
+      - name: Verify output package layout
+        shell: bash
+        run: |
+          test -s dist/atmosphere/contents/420000000000000F/exefs.nsp
+          test -f dist/atmosphere/contents/420000000000000F/flags/boot2.flag
+          test -f dist/SlideNX/config.ini
+          test -d dist/SlideNX/sounds
+          find dist -type f -print
+
+      - name: Upload installable SD package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SlideNX-Reborn-SD-package
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SlideNX-Reborn-build-diagnostics
+          path: |
+            slidenx.map
+            slidenx.elf
+            build/
+          if-no-files-found: ignore
+          retention-days: 7
