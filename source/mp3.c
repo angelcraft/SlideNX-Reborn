@@ -112,7 +112,7 @@ int playMp3(const char *file)
             svcSleepThread(1000000ULL);
             released_count = 0;
             Result wait_rc = audoutWaitPlayFinish(&released, &released_count, 100000000ULL);
-            if (R_FAILED(wait_rc) && wait_rc != MAKERESULT(Module_Libnx, LibnxError_TimedOut)) {
+            if (R_FAILED(wait_rc) && wait_rc != MAKERESULT(Module_Libnx, LibnxError_Timeout)) {
                 result = -1;
                 goto cleanup;
             }
