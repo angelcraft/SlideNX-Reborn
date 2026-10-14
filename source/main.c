@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <switch.h>
 #include "converter.h"
+#include "preview.h"
 
 #define ROOT "sdmc:/SlideNX"
 #define SOUNDS ROOT "/sounds"
@@ -331,6 +332,25 @@ static void convert_both(void)
              g_gain_db > 0 ? "+" : "", g_gain_db);
 }
 
+static void preview_selected(bool connecting)
+{
+    const char *name = connecting ? g_connect : g_disconnect;
+    char path[PATH_MAX_NX];
+    char error[192] = "";
+
+    if (!sound_path(name, path, sizeof(path)) || !regular_nonempty(path)) {
+        snprintf(g_status, sizeof(g_status), "Select a valid MP3 before previewing.");
+        return;
+    }
+
+    snprintf(g_status, sizeof(g_status), "Playing an 8-second preview of %.140s.", name);
+    if (preview_mp3(path, g_gain_db, error, sizeof(error)) == 0) {
+        snprintf(g_status, sizeof(g_status), "Preview finished: %.170s", name);
+    } else {
+        snprintf(g_status, sizeof(g_status), "Preview failed: %.180s", error);
+    }
+}
+
 static bool baseline(const char *target, const char *backup, const char *state)
 {
     FILE *fp = fopen(state, "r");
@@ -486,8 +506,9 @@ static void draw_picker(void)
 static void draw_main(void)
 {
     const char *items[] = {"Choose connect sound", "Choose disconnect sound",
-        "Conversion gain", "Convert selected sounds", "Install to LayeredFS",
-        "Restore previous sounds", "Refresh MP3 list", "Exit"};
+        "Preview connect sound", "Preview disconnect sound", "Conversion gain",
+        "Convert selected sounds", "Install to LayeredFS", "Restore previous sounds",
+        "Refresh MP3 list", "Exit"};
     char gain_text[48];
     snprintf(gain_text, sizeof(gain_text), "Conversion gain: %s%d dB",
              g_gain_db > 0 ? "+" : "", g_gain_db);
@@ -500,10 +521,10 @@ static void draw_main(void)
     printf("MP3 folder: sdmc:/SlideNX/sounds/\n");
     printf("Output RAW: sdmc:/SlideNX/output/\n");
     printf("Format: mono PCM 16-bit LE, 48000 Hz, headerless\n\n");
-    for (int i = 0; i < 8; i++)
-        printf("%c %s\n", i == g_menu_cursor ? '>' : ' ', i == 2 ? gain_text : items[i]);
+    for (int i = 0; i < 10; i++)
+        printf("%c %s\n", i == g_menu_cursor ? '>' : ' ', i == 4 ? gain_text : items[i]);
     printf("\nStatus: %s\n\n", g_status);
-    printf("UP/DOWN: Navigate   A: Select   LEFT/RIGHT: Gain +/-1 dB\n");
+    printf("UP/DOWN: Navigate   A: Select   LEFT/RIGHT: Gain +/-1 dB on gain row\n");
     printf("Y: Install   X: Restore   B: Refresh list   PLUS: Exit\n");
     consoleUpdate(NULL);
 }
@@ -542,9 +563,9 @@ int main(void)
             else draw_main();
         } else {
             if (down & HidNpadButton_Up) { if (g_menu_cursor > 0) g_menu_cursor--; }
-            if (down & HidNpadButton_Down) { if (g_menu_cursor < 7) g_menu_cursor++; }
-            if (g_menu_cursor == 2 && (down & HidNpadButton_Left)) adjust_gain(-1);
-            if (g_menu_cursor == 2 && (down & HidNpadButton_Right)) adjust_gain(1);
+            if (down & HidNpadButton_Down) { if (g_menu_cursor < 9) g_menu_cursor++; }
+            if (g_menu_cursor == 4 && (down & HidNpadButton_Left)) adjust_gain(-1);
+            if (g_menu_cursor == 4 && (down & HidNpadButton_Right)) adjust_gain(1);
 
             if (down & HidNpadButton_B) { if (g_sd_ready) refresh_all(); }
             if (down & HidNpadButton_X) { if (g_sd_ready) restore_baseline(); }
@@ -554,12 +575,14 @@ int main(void)
                 else switch (g_menu_cursor) {
                     case 0: open_picker(true); break;
                     case 1: open_picker(false); break;
-                    case 2: adjust_gain(1); break;
-                    case 3: convert_both(); break;
-                    case 4: install_both(); break;
-                    case 5: restore_baseline(); break;
-                    case 6: refresh_all(); break;
-                    case 7: consoleExit(NULL); return 0;
+                    case 2: preview_selected(true); break;
+                    case 3: preview_selected(false); break;
+                    case 4: adjust_gain(1); break;
+                    case 5: convert_both(); break;
+                    case 6: install_both(); break;
+                    case 7: restore_baseline(); break;
+                    case 8: refresh_all(); break;
+                    case 9: consoleExit(NULL); return 0;
                 }
             }
             if (g_ui_mode == UI_MAIN) draw_main();
