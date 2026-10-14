@@ -165,30 +165,42 @@ int main(void)
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&pad);
 
-    g_sd_init_rc = fsInitialize();
-    if (R_SUCCEEDED(g_sd_init_rc)) {
-        g_sd_rc = fsdevMountSdmc();
-        g_sd_ready = R_SUCCEEDED(g_sd_rc);
-    } else {
-        g_sd_rc = g_sd_init_rc;
-        g_sd_ready = false;
-    }
     /*
-     * BootSoundNX initializes libnx FS before mounting SD. Keep this explicit
-     * to avoid a false mount error caused by missing FS initialization.
-     */
-    /*
-     * BootSoundNX's startup code uses the same libnx filesystem pattern:
-     * initialise FS first, then mount SD. fsdevMountSdmc() must not be
-     * called before fsInitialize(). This diagnostic intentionally reports
-     * both initialization and mount outcomes to locate the previous error.
+     * Homebrew Menu may already have mounted sdmc:. Probe it first; calling
+     * fsdevMountSdmc() a second time can return an error even though SD access
+     * is already working. Only initialize/mount as a fallback if the probe
+     * fails.
      */
     {
         DIR *sd_dir = opendir("sdmc:/switch");
         g_sd_direct_access = (sd_dir != NULL);
-        g_sd_errno = errno;
+        g_sd_errno = g_sd_direct_access ? 0 : errno;
         if (sd_dir != NULL)
             closedir(sd_dir);
+    }
+
+    if (g_sd_direct_access) {
+        g_sd_init_rc = 0;
+        g_sd_rc = 0;
+        g_sd_ready = true;
+    } else {
+        g_sd_init_rc = fsInitialize();
+        if (R_SUCCEEDED(g_sd_init_rc)) {
+            g_sd_rc = fsdevMountSdmc();
+            g_sd_ready = R_SUCCEEDED(g_sd_rc);
+        } else {
+            g_sd_rc = g_sd_init_rc;
+            g_sd_ready = false;
+        }
+
+        DIR *sd_dir = opendir("sdmc:/switch");
+        g_sd_direct_access = (sd_dir != NULL);
+        g_sd_errno = g_sd_direct_access ? 0 : errno;
+        if (sd_dir != NULL)
+            closedir(sd_dir);
+
+        if (g_sd_direct_access)
+            g_sd_ready = true;
     }
     (void)initialize_audio();
     initialize_gpio(&left_previous, &right_previous, &left_value_ready, &right_value_ready);
