@@ -23,6 +23,11 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+      - name: Install SDL2 graphics dependency
+        shell: bash
+        run: |
+          dkp-pacman -Sy --noconfirm switch-sdl2 switch-mesa switch-glad switch-libdrm_nouveau
+
       - name: Compile SlideNX
         shell: bash
         run: |
