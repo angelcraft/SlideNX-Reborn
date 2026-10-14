@@ -7,6 +7,7 @@
 #define MINIMP3_IMPLEMENTATION
 #include "minimp3.h"
 #include "converter.h"
+#include "slidenx_normalizer.h"
 
 #define TARGET_RATE 48000U
 #define MAX_MP3_SIZE (16U * 1024U * 1024U)
@@ -57,7 +58,6 @@ int convert_mp3_to_raw(const char *input_path, const char *output_path,
         set_error(error_text, error_text_size, "Invalid input, output or gain.");
         return -1;
     }
-    gain = pow(10.0, (double)gain_db / 20.0);
     input = fopen(input_path, "rb");
     if (!input) { set_error(error_text, error_text_size, "Could not open input MP3."); goto cleanup; }
     if (fseek(input, 0, SEEK_END) != 0 || (file_size = ftell(input)) <= 0 || fseek(input, 0, SEEK_SET) != 0) {
@@ -113,6 +113,8 @@ int convert_mp3_to_raw(const char *input_path, const char *output_path,
     }
 
     if (!source_rate || !mono_count) { set_error(error_text, error_text_size, "No valid MP3 audio frames decoded."); goto cleanup; }
+
+    gain = slidenx_normalized_gain(mono, mono_count, gain_db);
     output = fopen(output_path, "wb");
     if (!output) { set_error(error_text, error_text_size, "Could not create RAW output."); goto cleanup; }
     memset(&writer, 0, sizeof(writer));
