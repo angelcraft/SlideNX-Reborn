@@ -1,5 +1,6 @@
 #include "gui.h"
 
+#define SDL_MAIN_HANDLED
 #include <SDL2/SDL.h>
 #include <ctype.h>
 #include <stdio.h>
@@ -13,7 +14,6 @@ typedef struct { Uint8 r, g, b, a; } GuiColor;
 
 static SDL_Window *g_window;
 static SDL_Renderer *g_renderer;
-static bool g_ready;
 
 static const GuiColor C_BG       = {  9,  14,  27, 255};
 static const GuiColor C_SIDEBAR  = { 16,  23,  40, 255};
@@ -178,6 +178,7 @@ static void draw_truncated(const char *value, int x, int y, int scale,
 
 bool gui_init(void)
 {
+    SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         fprintf(stderr, "SDL video init failed: %s\n", SDL_GetError());
         SDL_Quit();
@@ -210,7 +211,6 @@ bool gui_init(void)
         fprintf(stderr, "SDL logical resolution setup failed: %s\n", SDL_GetError());
     }
     SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
-    g_ready = true;
     return true;
 }
 
@@ -220,7 +220,6 @@ void gui_exit(void)
     if (g_window) SDL_DestroyWindow(g_window);
     g_renderer = NULL;
     g_window = NULL;
-    g_ready = false;
     SDL_Quit();
 }
 
@@ -338,7 +337,7 @@ void gui_draw_picker(bool connecting, size_t count, const char *const *files, in
         if (end > count) end = count;
         int row = 0;
         for (size_t i = start; i < end; ++i, ++row) {
-            int y = 169 + row * 34;
+            int y = 169 + row * 33;
             bool active = ((int)i == selected);
             if (active) {
                 fill_rect(44, y, 1190, 31, C_PANEL_HI);
