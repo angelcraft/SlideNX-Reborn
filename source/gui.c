@@ -236,7 +236,7 @@ static void frame_end(void)
 
 static void draw_header(const char *title, const char *subtitle)
 {
-    text_draw("SLIDENX REBORN 2.3", 34, 22, 3, C_TEXT, 36);
+    text_draw("SLIDENX REBORN 2.4", 34, 22, 3, C_TEXT, 36);
     text_draw(title, 35, 64, 2, C_ACCENT, 36);
     draw_truncated(subtitle, 800, 55, 2, C_MUTED, 440);
     line(30, 94, 1250, 94, C_BORDER);
