@@ -3,7 +3,7 @@
 | ID | Test | Expected result | Evidence |\n| N0 | Build diagnostic NRO with libnx only | `slidenx-diagnostic.nro` generated | GitHub Actions artifact |\n| N1 | Run diagnostic NRO on OLED | SD/audio/GPIO service status is displayed; A/B tones work if `audout` is available | Screenshot + status values |\n| N2 | Attach/detach each Joy-Con while diagnostic runs | Raw values for GPIO `0x0C` / `0x34` are observed and transitions recorded | Written L/R values and transition notes |
 |---|---|---|---|
 | B1 | Build in devkitPro shell with `switch-dev switch-mpg123` | `slidenx.nsp` generated, no unresolved mpg123/libnx symbols | Full compiler/linker log |
-| P1 | Run packaging script | Correct `exefs.nsp` and `flags/boot2.flag` under title ID `420000000000000F` | `find dist -type f` listing |
+| P1 | Run packaging script | Correct `exefs.nsp` and `flags/boot2.flag` under title ID `420000000000534E` | `find dist -type f` listing |
 | S1 | Boot on OLED, firmware 22.x, Atmosphère/Hekate | Console boots; Hekate Toolbox reports module running | Firmware, Atmosphère, Hekate versions + screenshot |
 | S2 | Check `SlideNX.log` | SD, audio, and both GPIO sessions initialise | Log file |
 | G1 | Attach/detach left Joy-Con | Exactly one custom event sound for each state change | Log transitions + observation |
@@ -16,4 +16,4 @@
 
 ## Stop conditions
 
-Stop testing and remove `atmosphere/contents/420000000000000F/` if the console fails to boot normally, audio output becomes stuck, Atmosphère reports a fatal error, or Hekate Toolbox marks the module as repeatedly crashing.
+Stop testing and remove `atmosphere/contents/420000000000534E/` if the console fails to boot normally, audio output becomes stuck, Atmosphère reports a fatal error, or Hekate Toolbox marks the module as repeatedly crashing.
