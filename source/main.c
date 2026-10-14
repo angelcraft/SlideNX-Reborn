@@ -166,6 +166,10 @@ static void load_sound_files(void)
                 (unsigned long)g_sound_count, g_random_mode ? "true" : "false");
 }
 
+/* Open audio only for an actual sound event. Keeping an active AudioOut stream
+ * for the entire lifetime of a system module may compete with foreground apps.
+ * The stream is closed after each clip so HOME Menu and homebrew can use audio
+ * normally while SlideNX is idle. */
 static void play_connection_sound(bool attached)
 {
     const char *path;
@@ -177,9 +181,22 @@ static void play_connection_sound(bool attached)
         path = attached ? ATTACH_PATH : DETACH_PATH;
     }
 
+    rc = mp3SystemInit();
+    if (rc != 0) {
+        log_message("Audio initialization failed for '%s'.", path);
+        return;
+    }
+    g_audio_initialized = true;
+    log_message("Audio ready for GPIO event; sample rate=%u.", (unsigned)audoutGetSampleRate());
+
     rc = playMp3(path);
     if (rc != 0)
         log_message("Could not play '%s' (decoder/audio/file error).", path);
+    else
+        log_message("Playback completed for '%s'.", path);
+
+    mp3SystemExit();
+    g_audio_initialized = false;
 }
 
 static void close_runtime_services(void)
@@ -266,21 +283,14 @@ int main(void)
     load_sound_files();
     srand((unsigned)time(NULL));
 
-    if (mp3SystemInit() == 0) {
-        g_audio_initialized = true;
-        log_message("Audio/MP3 runtime ready; output sample rate=%u.", (unsigned)audoutGetSampleRate());
-    } else {
-        log_message("Audio/MP3 initialization failed; monitoring will continue without sound.");
-    }
-
+    /* Do not initialize/open AudioOut at module startup. It is acquired only
+     * inside play_connection_sound() when GPIO changes, then released. */
     if (!initialize_gpio(&left_previous, &right_previous)) {
         log_message("GPIO initialization failed; module will exit so it does not spin uselessly.");
         close_runtime_services();
         return 1;
     }
 
-    /* Sysmodules do not have an applet lifecycle to poll. Keep the worker alive
-     * and sleep between reads, instead of depending on appletMainLoop(). */
     for (;;) {
         GpioValue left_now;
         GpioValue right_now;
