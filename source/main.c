@@ -10,7 +10,7 @@
 #include <time.h>
 
 #include <switch.h>
-#include <switch/runtime/fatal.h>
+#include <switch/services/fatal.h>
 
 #include "mp3.h"
 
@@ -57,7 +57,7 @@ void __attribute__((weak)) __appInit(void)
 {
     Result rc = smInitialize();
     if (R_FAILED(rc))
-        fatalSimple(MAKERESULT(Module_Libnx, LibnxError_InitFail_SM));
+        fatalThrow(MAKERESULT(Module_Libnx, LibnxError_InitFail_SM));
 
     rc = fsInitialize();
     if (R_FAILED(rc))
