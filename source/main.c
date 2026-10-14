@@ -338,7 +338,7 @@ static void convert_both(void)
     }
     g_outputs_ready = true;
     (void)save_settings();
-    snprintf(g_status, sizeof(g_status), "Converted both sounds at %s%d dB. Not installed yet.",
+    snprintf(g_status, sizeof(g_status), "Auto-normalized both sounds; manual gain %s%d dB. Not installed yet.",
              g_gain_db > 0 ? "+" : "", g_gain_db);
 }
 
@@ -503,7 +503,7 @@ static void draw_picker(void)
 {
     size_t start = g_picker_cursor >= PICKER_ROWS ? (size_t)(g_picker_cursor - PICKER_ROWS + 1) : 0;
     consoleClear();
-    printf("SlideNX Reborn 2.2 - Select %s sound\n\n",
+    printf("SlideNX Reborn 2.3 - Select %s sound\n\n",
            g_ui_mode == UI_PICK_CONNECT ? "CONNECT" : "DISCONNECT");
     printf("Folder: sdmc:/SlideNX/sounds/\nUP/DOWN to navigate; A select; B cancel.\n");
     printf("Found %lu MP3 file(s).\n\n", (unsigned long)g_sound_count);
@@ -524,13 +524,14 @@ static void draw_main(void)
              g_gain_db > 0 ? "+" : "", g_gain_db);
 
     consoleClear();
-    printf("SlideNX Reborn 2.2 - Sound Studio\n");
+    printf("SlideNX Reborn 2.3 - Sound Studio\n");
     printf("=================================\n\n");
     printf("CONNECT:    %s\n", g_connect[0] ? g_connect : "(not selected)");
     printf("DISCONNECT: %s\n\n", g_disconnect[0] ? g_disconnect : "(not selected)");
     printf("MP3 folder: sdmc:/SlideNX/sounds/\n");
     printf("Output RAW: sdmc:/SlideNX/output/\n");
-    printf("Format: mono PCM 16-bit LE, 48000 Hz, headerless\n\n");
+    printf("Format: mono PCM 16-bit LE, 48000 Hz, headerless\n");
+    printf("Auto level: RMS target -18 dBFS; peak ceiling -3 dBFS\n\n");
     for (int i = 0; i < 10; i++)
         printf("%c %s\n", i == g_menu_cursor ? '>' : ' ', i == 4 ? gain_text : items[i]);
     printf("\nStatus: %s\n\n", g_status);
