@@ -10,6 +10,7 @@
 #include <switch.h>
 #include "converter.h"
 #include "preview.h"
+#include "gui.h"
 
 #define ROOT "sdmc:/SlideNX"
 #define SOUNDS ROOT "/sounds"
@@ -37,6 +38,7 @@
 
 typedef enum { UI_MAIN, UI_PICK_CONNECT, UI_PICK_DISCONNECT } UiMode;
 static bool g_sd_ready;
+static bool g_ui_graphical;
 static bool g_outputs_ready;
 static int g_gain_db;
 static int g_menu_cursor;
@@ -501,6 +503,12 @@ static void adjust_gain(int delta)
 
 static void draw_picker(void)
 {
+    if (g_ui_graphical) {
+        const char *files[MAX_FILES];
+        for (size_t i = 0; i < g_sound_count; i++) files[i] = g_sound_files[i];
+        gui_draw_picker(g_ui_mode == UI_PICK_CONNECT, g_sound_count, files, g_picker_cursor);
+        return;
+    }
     size_t start = g_picker_cursor >= PICKER_ROWS ? (size_t)(g_picker_cursor - PICKER_ROWS + 1) : 0;
     consoleClear();
     printf("SlideNX Reborn 2.3 - Select %s sound\n\n",
@@ -515,6 +523,11 @@ static void draw_picker(void)
 
 static void draw_main(void)
 {
+    if (g_ui_graphical) {
+        gui_draw_main(g_menu_cursor, g_connect, g_disconnect, g_gain_db,
+                      g_status, g_outputs_ready, g_sd_ready);
+        return;
+    }
     const char *items[] = {"Choose connect sound", "Choose disconnect sound",
         "Preview connect sound", "Preview disconnect sound", "Conversion gain",
         "Convert selected sounds", "Install to LayeredFS", "Restore previous sounds",
@@ -543,7 +556,8 @@ static void draw_main(void)
 int main(void)
 {
     PadState pad;
-    consoleInit(NULL);
+    g_ui_graphical = gui_init();
+    if (!g_ui_graphical) consoleInit(NULL);
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&pad);
 
@@ -593,13 +607,15 @@ int main(void)
                     case 6: install_both(); break;
                     case 7: restore_baseline(); break;
                     case 8: refresh_all(); break;
-                    case 9: consoleExit(NULL); return 0;
+                    case 9:
+                        if (g_ui_graphical) gui_exit(); else consoleExit(NULL);
+                        return 0;
                 }
             }
             if (g_ui_mode == UI_MAIN) draw_main();
         }
         svcSleepThread(16000000ULL);
     }
-    consoleExit(NULL);
+    if (g_ui_graphical) gui_exit(); else consoleExit(NULL);
     return 0;
 }
