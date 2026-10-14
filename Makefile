@@ -1,5 +1,5 @@
 # SlideNX Reborn - Nintendo Switch sysmodule
-# Requires devkitPro/devkitA64, libnx and the switch-mpg123 portlib.
+# Requires devkitPro/devkitA64 and libnx. MP3 decoding uses vendored minimp3.
 
 .SUFFIXES:
 
@@ -22,7 +22,7 @@ CFLAGS      += $(INCLUDE) -D__SWITCH__
 CXXFLAGS    := $(CFLAGS) -fno-rtti -fno-exceptions
 ASFLAGS     := -g $(ARCH)
 LDFLAGS     = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
-LIBS        := -lnx -lmpg123 -lm
+LIBS        := -lnx -lm
 LIBDIRS     := $(PORTLIBS) $(LIBNX)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
