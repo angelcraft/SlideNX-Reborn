@@ -168,18 +168,17 @@ int main(void)
     initialize_gpio(&left_previous, &right_previous, &left_value_ready, &right_value_ready);
 
     while (appletMainLoop()) {
-        hidScanInput();
         padUpdate(&pad);
         const u64 down = padGetButtonsDown(&pad);
 
-        if (down & KEY_PLUS)
+        if (down & HidNpadButton_Plus)
             break;
 
-        if (down & KEY_A) {
+        if (down & HidNpadButton_A) {
             const Result rc = play_test_tone(660.0);
             snprintf(last_audio, sizeof(last_audio), "A: 660 Hz tone result = 0x%08x.", (unsigned)rc);
         }
-        if (down & KEY_B) {
+        if (down & HidNpadButton_B) {
             const Result rc = play_test_tone(440.0);
             snprintf(last_audio, sizeof(last_audio), "B: 440 Hz tone result = 0x%08x.", (unsigned)rc);
         }
