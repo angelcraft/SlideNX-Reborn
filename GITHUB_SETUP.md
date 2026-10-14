@@ -1,21 +1,20 @@
-# GitHub Actions build
+# Build and test SlideNX Reborn 2.0
 
-This repository now includes `.github/workflows/build.yml` on `main`.
+This branch builds a foreground homebrew application (NRO), not a sysmodule or NSP.
 
-The workflow triggers on pushes to `main`/`master`, pull requests targeting those branches, and manual `workflow_dispatch`. It installs devkitPro's Switch toolchain and `switch-mpg123`, runs `build_and_package.sh`, validates the staged SD-card layout, and uploads `SlideNX-Reborn-SD-package` as a workflow artifact when successful. On failure it attempts to upload compiler diagnostics.
+## GitHub Actions
 
-## Run it manually
+Pushes to main, master, or rebuild branches run the build workflow. Open the Actions tab and download the SlideNX-Reborn-NRO artifact from the successful run summary. If the build fails, inspect the compiler log and diagnostic artifact.
 
-1. Open the repository's **Actions** tab: https://github.com/angelcraft/SlideNX-Reborn/actions
-2. Select **SlideNX Reborn build** in the workflow list.
-3. Click **Run workflow** and select `main`.
-4. Open the run to watch build output. A successful run exposes `SlideNX-Reborn-SD-package` under **Summary → Artifacts**.
-5. If it fails, inspect the failed step logs and download `SlideNX-Reborn-build-diagnostics` if available.
+## Install and test
 
-## What a green build means
+1. Back up the SD card.
+2. Copy slidenx.nro to sd:/switch/slidenx.nro.
+3. Place both inputs at sd:/SlideNX/IN.mp3 and sd:/SlideNX/OUT.mp3.
+4. Launch SlideNX from Homebrew Menu.
+5. Press A to convert and verify the success status.
+6. Press Y to install both outputs to LayeredFS.
+7. Reboot and test the connect and disconnect sounds.
+8. Reopen SlideNX and press X to restore the state captured before the first install.
 
-A successful CI run proves only that the selected toolchain compiled and packaged the source. It does not establish that raw GPIO identifiers `0x0C` and `0x34` work on every Switch OLED or Horizon 22.x point release. Test with an SD backup and preferably emuMMC first. The original behavior of not suppressing Nintendo's own connection sound remains a limitation.
-
-## Install/package layout
-
-The artifact contains a `dist/` directory's contents staged for the SD root, including `atmosphere/contents/420000000000534E/exefs.nsp`, its `flags/boot2.flag`, and `SlideNX/config.ini`. Add MP3 files under `SlideNX/sounds/` yourself.
+The app does not install a sysmodule, poll GPIO, change boot flags, or alter Atmosphere configuration. A successful CI build still requires a real Switch test.

@@ -1,112 +1,57 @@
-name: SlideNX Reborn build
+name: SlideNX Reborn NRO build
 
 on:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+      - "rebuild/**"
   pull_request:
     branches: [main, master]
   workflow_dispatch:
-    inputs:
-      target:
-        description: "Build diagnostic NRO first, or explicitly request the sysmodule build after hardware testing"
-        required: true
-        type: choice
-        default: diagnostic
-        options:
-          - diagnostic
-          - sysmodule
 
 permissions:
   contents: read
 
 jobs:
-  diagnostic-nro:
-    name: Build diagnostic NRO
+  build-nro:
+    name: Build foreground NRO
     runs-on: ubuntu-latest
     container:
       image: devkitpro/devkita64:latest
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Compile diagnostic NRO
+      - name: Compile SlideNX
         shell: bash
         run: |
           export DEVKITPRO=/opt/devkitpro
           export PATH="$DEVKITPRO/tools/bin:$DEVKITPRO/devkitA64/bin:$PATH"
-          make -C diagnostic-nro clean all
-          test -s diagnostic-nro/slidenx-diagnostic.nro
-          file diagnostic-nro/slidenx-diagnostic.nro || true
-          sha256sum diagnostic-nro/slidenx-diagnostic.nro
+          make clean
+          make -j2
+          test -s slidenx.nro
+          file slidenx.nro || true
+          sha256sum slidenx.nro
 
-      - name: Upload diagnostic NRO
+      - name: Upload NRO and instructions
         uses: actions/upload-artifact@v4
         with:
-          name: SlideNX-Reborn-Diagnostic-NRO
+          name: SlideNX-Reborn-NRO
           path: |
-            diagnostic-nro/slidenx-diagnostic.nro
-            diagnostic-nro/README.md
+            slidenx.nro
+            README.md
           if-no-files-found: error
           retention-days: 14
 
-      - name: Preserve diagnostic compiler output on failure
+      - name: Preserve build diagnostics
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: SlideNX-Reborn-NRO-build-diagnostics
+          name: SlideNX-Reborn-build-diagnostics
           path: |
-            diagnostic-nro/build/
-            diagnostic-nro/slidenx-diagnostic.elf
-            diagnostic-nro/slidenx-diagnostic.map
-          if-no-files-found: ignore
-          retention-days: 7
-
-  sysmodule-nsp:
-    name: Build sysmodule NSP
-    needs: diagnostic-nro
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'sysmodule' }}
-    runs-on: ubuntu-latest
-    container:
-      image: devkitpro/devkita64:latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build and stage SD package
-        shell: bash
-        run: |
-          export DEVKITPRO=/opt/devkitpro
-          export PATH="$DEVKITPRO/tools/bin:$DEVKITPRO/devkitA64/bin:$PATH"
-          chmod +x ./build_and_package.sh
-          ./build_and_package.sh
-
-      - name: Verify output package layout
-        shell: bash
-        run: |
-          test -s dist/atmosphere/contents/420000000000534E/exefs.nsp
-          test -f dist/atmosphere/contents/420000000000534E/flags/boot2.flag
-          test -f dist/SlideNX/config.ini
-          test -d dist/SlideNX/sounds
-          find dist -type f -print
-
-      - name: Upload installable SD package
-        uses: actions/upload-artifact@v4
-        with:
-          name: SlideNX-Reborn-SD-package
-          path: dist/
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Preserve sysmodule compiler output on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: SlideNX-Reborn-NSP-build-diagnostics
-          path: |
-            slidenx.map
-            slidenx.elf
-            slidenx.nso
-            slidenx.npdm
             build/
+            slidenx.elf
+            slidenx.map
           if-no-files-found: ignore
           retention-days: 7
