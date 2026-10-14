@@ -1,14 +1,15 @@
-# SlideNX Reborn 2.3 — Sound Studio
+# SlideNX Reborn 2.4 — Sound Studio
 
 SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmodule.
 
-## New in 2.3
+## New in 2.4
 - Choose any MP3 in sd:/SlideNX/sounds/ for connect and disconnect sounds.
 - Keep original filenames; no renaming to IN.mp3 or OUT.mp3.
 - Persist chosen filenames and gain to sd:/SlideNX/settings.ini.
 - Preview up to 8 seconds of the selected connect or disconnect sound on the Switch, using the same normalization approach as conversion.
 - Adjust conversion gain from -12 dB to +6 dB in 1 dB steps.
 - Automatically normalize connect and disconnect sounds independently using active-sample RMS, targeting -18 dBFS with a -3 dBFS sample-peak ceiling.
+- Graphical SDL2 interface with menu highlighting, separate connect/disconnect cards, status panels, and a dedicated MP3 picker; controller controls and text fallback remain available.
 - Cap automatic boost at +18 dB; manual gain remains available, but the peak ceiling takes priority.
 - Convert to headerless signed PCM 16-bit little-endian, mono, 48 kHz.
 - Convert and install remain separate actions.
@@ -25,6 +26,8 @@ SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmod
 7. Press Y (or select Install) and reboot to test.
 
 ## Controls
+The graphical interface is designed for 1280×720 output and is controlled with the Switch controller. If SDL2 cannot initialize, the app falls back to the text interface.
+
 - UP/DOWN: navigate main menu or picker.
 - Select Preview connect or Preview disconnect and press A to hear an 8-second sample.
 - A: choose a sound / activate selected menu item.
