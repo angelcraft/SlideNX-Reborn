@@ -26,6 +26,7 @@ static int g_sd_errno;
 static uint8_t *g_pcm_buffer;
 static AudioOutBuffer g_audio_buffer;
 
+static Result g_sd_init_rc;
 static Result g_sd_rc;
 static Result g_gpio_init_rc;
 static Result g_left_open_rc = (Result)0xFFFFFFFF;
@@ -164,8 +165,24 @@ int main(void)
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&pad);
 
-    g_sd_rc = fsdevMountSdmc();
-    g_sd_ready = R_SUCCEEDED(g_sd_rc);
+    g_sd_init_rc = fsInitialize();
+    if (R_SUCCEEDED(g_sd_init_rc)) {
+        g_sd_rc = fsdevMountSdmc();
+        g_sd_ready = R_SUCCEEDED(g_sd_rc);
+    } else {
+        g_sd_rc = g_sd_init_rc;
+        g_sd_ready = false;
+    }
+    /*
+     * BootSoundNX initializes libnx FS before mounting SD. Keep this explicit
+     * to avoid a false mount error caused by missing FS initialization.
+     */
+    /*
+     * BootSoundNX's startup code uses the same libnx filesystem pattern:
+     * initialise FS first, then mount SD. fsdevMountSdmc() must not be
+     * called before fsInitialize(). This diagnostic intentionally reports
+     * both initialization and mount outcomes to locate the previous error.
+     */
     {
         DIR *sd_dir = opendir("sdmc:/switch");
         g_sd_direct_access = (sd_dir != NULL);
@@ -213,6 +230,7 @@ int main(void)
         printf("SlideNX Reborn - GPIO / AUDIO TEST\n");
         printf("==================================\n\n");
         printf("Diagnostic NRO only - not the installable sysmodule.\n\n");
+        printf("FS init:     %s (0x%08x)\n", R_SUCCEEDED(g_sd_init_rc) ? "OK" : "FAILED", (unsigned)g_sd_init_rc);
         printf("SD mount:    %s (0x%08x)\n", g_sd_ready ? "OK" : "FAILED", (unsigned)g_sd_rc);
         printf("SD /switch:  %s (errno %d)\n", g_sd_direct_access ? "ACCESSIBLE" : "UNAVAILABLE", g_sd_errno);
         printf("Audio out:   %s (0x%08x)\n", g_audio_ready ? "READY" : "FAILED", (unsigned)g_audio_rc);
