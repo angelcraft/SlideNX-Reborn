@@ -8,6 +8,7 @@
 #include <switch.h>
 #include "minimp3.h"
 #include "preview.h"
+#include "slidenx_normalizer.h"
 
 #define TARGET_RATE 48000U
 #define MAX_MP3_SIZE (16U * 1024U * 1024U)
@@ -53,7 +54,6 @@ int preview_mp3(const char *input_path, int gain_db,
         set_error(error_text, error_text_size, "Invalid MP3 path or gain.");
         return -1;
     }
-    gain = pow(10.0, (double)gain_db / 20.0);
 
     fp = fopen(input_path, "rb");
     if (!fp) { set_error(error_text, error_text_size, "Could not open selected MP3."); goto cleanup; }
@@ -113,6 +113,8 @@ int preview_mp3(const char *input_path, int gain_db,
     }
 
     if (!source_rate || !mono_count) { set_error(error_text, error_text_size, "No decodable MP3 audio frames."); goto cleanup; }
+
+    gain = slidenx_normalized_gain(mono, mono_count, gain_db);
 
     pcm_buffer = (uint8_t *)memalign(0x1000, PCM_BUFFER_BYTES);
     if (!pcm_buffer) { set_error(error_text, error_text_size, "Could not allocate aligned audio buffer."); goto cleanup; }
