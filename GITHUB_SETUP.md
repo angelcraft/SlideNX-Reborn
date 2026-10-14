@@ -18,4 +18,4 @@ A successful CI run proves only that the selected toolchain compiled and package
 
 ## Install/package layout
 
-The artifact contains a `dist/` directory's contents staged for the SD root, including `atmosphere/contents/420000000000000F/exefs.nsp`, its `flags/boot2.flag`, and `SlideNX/config.ini`. Add MP3 files under `SlideNX/sounds/` yourself.
+The artifact contains a `dist/` directory's contents staged for the SD root, including `atmosphere/contents/420000000000534E/exefs.nsp`, its `flags/boot2.flag`, and `SlideNX/config.ini`. Add MP3 files under `SlideNX/sounds/` yourself.
