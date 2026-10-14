@@ -62,9 +62,9 @@ jobs:
           retention-days: 7
 
   sysmodule-nsp:
-    name: Build sysmodule NSP (manual opt-in)
+    name: Build sysmodule NSP
     needs: diagnostic-nro
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.target == 'sysmodule' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.target == 'sysmodule' }}
     runs-on: ubuntu-latest
     container:
       image: devkitpro/devkita64:latest
