@@ -18,6 +18,7 @@
 #define GPIO_LEFT_RAW_ID  0x0C
 #define GPIO_RIGHT_RAW_ID 0x34
 #define POLL_INTERVAL_NS  20000000ULL /* 20 ms */
+#define DEBOUNCE_SAMPLES  5           /* 100 ms of stable readings */
 #define MAX_SOUND_FILES   96
 #define MAX_SOUND_PATH    512
 #define CONFIG_PATH       "sdmc:/SlideNX/config.ini"
@@ -26,9 +27,8 @@
 #define DETACH_PATH       "sdmc:/SlideNX/sounds/detach.mp3"
 #define LOG_PATH          "sdmc:/SlideNX/SlideNX.log"
 
-/* These two raw GPIO identifiers are inherited from upstream SlideNX. Their
- * behavior must still be verified on the OLED hardware; they are not public
- * named pads in libnx's enum. */
+/* These raw GPIO identifiers are inherited from upstream SlideNX. Their
+ * behavior must still be verified on OLED hardware. */
 
 size_t nx_inner_heap_size = INNER_HEAP_SIZE;
 char nx_inner_heap[INNER_HEAP_SIZE];
@@ -98,7 +98,7 @@ static bool read_random_mode(void)
 {
     FILE *file = fopen(CONFIG_PATH, "r");
     char line[128];
-    bool random_mode = false; /* Safe default if the file/key is missing. */
+    bool random_mode = false;
 
     if (file == NULL)
         return false;
@@ -171,6 +171,11 @@ static void play_connection_sound(bool attached)
     const char *path;
     int rc;
 
+    if (!g_audio_initialized) {
+        log_message("Skipping sound: audio runtime is not initialized.");
+        return;
+    }
+
     if (g_random_mode && g_sound_count > 0) {
         path = g_sound_paths[(size_t)rand() % g_sound_count];
     } else {
@@ -179,7 +184,7 @@ static void play_connection_sound(bool attached)
 
     rc = playMp3(path);
     if (rc != 0)
-        log_message("Could not play '%s' (decoder/audio/file error).", path);
+        log_message("Could not play '%s' (decoder/audio/file error, rc=%d).", path, rc);
 }
 
 static void close_runtime_services(void)
@@ -252,15 +257,43 @@ static bool initialize_gpio(GpioValue *left_initial, GpioValue *right_initial)
     return true;
 }
 
+/* Require several consecutive reads before accepting a GPIO transition.
+ * This filters short glitches/noisy edges that otherwise trigger duplicate
+ * sounds. It cannot validate whether these raw GPIO IDs are correct for OLED. */
+static bool stable_transition(GpioValue current, GpioValue *candidate,
+                              unsigned *count, GpioValue previous)
+{
+    if (current == previous) {
+        *candidate = previous;
+        *count = 0;
+        return false;
+    }
+
+    if (current != *candidate) {
+        *candidate = current;
+        *count = 1;
+    } else if (*count < DEBOUNCE_SAMPLES) {
+        (*count)++;
+    }
+
+    return *count >= DEBOUNCE_SAMPLES;
+}
+
 int main(void)
 {
     GpioValue left_previous = GpioValue_Low;
     GpioValue right_previous = GpioValue_Low;
+    GpioValue left_candidate = GpioValue_Low;
+    GpioValue right_candidate = GpioValue_Low;
+    unsigned left_stable_count = 0;
+    unsigned right_stable_count = 0;
     Result rc;
 
     rc = fsdevMountSdmc();
     if (R_SUCCEEDED(rc))
         log_message("Startup. SD card mounted.");
+    else
+        log_message("SD mount failed: 0x%08x.", (unsigned)rc);
 
     g_random_mode = read_random_mode();
     load_sound_files();
@@ -278,9 +311,9 @@ int main(void)
         close_runtime_services();
         return 1;
     }
+    left_candidate = left_previous;
+    right_candidate = right_previous;
 
-    /* Sysmodules do not have an applet lifecycle to poll. Keep the worker alive
-     * and sleep between reads, instead of depending on appletMainLoop(). */
     for (;;) {
         GpioValue left_now;
         GpioValue right_now;
@@ -292,20 +325,30 @@ int main(void)
         left_rc = gpioPadGetValue(&g_left_pad, &left_now);
         right_rc = gpioPadGetValue(&g_right_pad, &right_now);
 
-        if (R_SUCCEEDED(left_rc) && left_now != left_previous) {
-            log_message("Left GPIO changed %u -> %u.", (unsigned)left_previous, (unsigned)left_now);
-            left_previous = left_now;
-            /* Preserve the original SlideNX polarity: low=attached, high=detached. */
-            play_connection_sound(left_now == GpioValue_Low);
+        if (R_FAILED(left_rc)) {
+            left_stable_count = 0;
+            left_candidate = left_previous;
+        } else if (stable_transition(left_now, &left_candidate, &left_stable_count, left_previous)) {
+            GpioValue old_value = left_previous;
+            left_previous = left_candidate;
+            left_stable_count = 0;
+            log_message("Left GPIO stable transition %u -> %u.", (unsigned)old_value, (unsigned)left_previous);
+            /* Preserve upstream polarity: low=attached, high=detached. */
+            play_connection_sound(left_previous == GpioValue_Low);
         }
-        if (R_SUCCEEDED(right_rc) && right_now != right_previous) {
-            log_message("Right GPIO changed %u -> %u.", (unsigned)right_previous, (unsigned)right_now);
-            right_previous = right_now;
-            play_connection_sound(right_now == GpioValue_Low);
+
+        if (R_FAILED(right_rc)) {
+            right_stable_count = 0;
+            right_candidate = right_previous;
+        } else if (stable_transition(right_now, &right_candidate, &right_stable_count, right_previous)) {
+            GpioValue old_value = right_previous;
+            right_previous = right_candidate;
+            right_stable_count = 0;
+            log_message("Right GPIO stable transition %u -> %u.", (unsigned)old_value, (unsigned)right_previous);
+            play_connection_sound(right_previous == GpioValue_Low);
         }
     }
 
-    /* Unreachable in normal operation; retained for completeness. */
     close_runtime_services();
     return 0;
 }
