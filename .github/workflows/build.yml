@@ -37,6 +37,7 @@ jobs:
           make -C diagnostic-nro clean all
           test -s diagnostic-nro/slidenx-diagnostic.nro
           file diagnostic-nro/slidenx-diagnostic.nro || true
+          sha256sum diagnostic-nro/slidenx-diagnostic.nro
 
       - name: Upload diagnostic NRO
         uses: actions/upload-artifact@v4
