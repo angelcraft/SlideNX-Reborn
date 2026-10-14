@@ -48,6 +48,17 @@ static char g_connect[NAME_MAX_NX] = "";
 static char g_disconnect[NAME_MAX_NX] = "";
 static char g_status[256] = "Place MP3 files in sdmc:/SlideNX/sounds/.";
 
+static void copy_name(char *destination, size_t destination_size, const char *source)
+{
+    size_t length;
+    if (destination == NULL || destination_size == 0) return;
+    if (source == NULL) { destination[0] = '\0'; return; }
+    length = strlen(source);
+    if (length >= destination_size) length = destination_size - 1;
+    memcpy(destination, source, length);
+    destination[length] = '\0';
+}
+
 static bool exists(const char *path)
 {
     struct stat st;
@@ -170,8 +181,7 @@ static void scan_sounds(void)
         n = snprintf(path, sizeof(path), "%s/%s", SOUNDS, entry->d_name);
         if (n < 0 || (size_t)n >= sizeof(path)) continue;
         if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) continue;
-        strncpy(g_sound_files[g_sound_count], entry->d_name, NAME_MAX_NX - 1);
-        g_sound_files[g_sound_count][NAME_MAX_NX - 1] = '\0';
+        copy_name(g_sound_files[g_sound_count], NAME_MAX_NX, entry->d_name);
         g_sound_count++;
     }
     closedir(dir);
@@ -229,9 +239,9 @@ static void load_settings(void)
             len = strlen(value);
             while (len && isspace((unsigned char)value[len - 1])) value[--len] = '\0';
             if (!strcasecmp(key, "connect") && safe_mp3_name(value))
-                strncpy(connect, value, sizeof(connect) - 1);
+                copy_name(connect, sizeof(connect), value);
             else if (!strcasecmp(key, "disconnect") && safe_mp3_name(value))
-                strncpy(disconnect, value, sizeof(disconnect) - 1);
+                copy_name(disconnect, sizeof(disconnect), value);
             else if (!strcasecmp(key, "gain_db")) {
                 char *end = NULL; long v = strtol(value, &end, 10);
                 if (end != value && *end == '\0' && v >= -12 && v <= 6) gain = (int)v;
@@ -240,12 +250,12 @@ static void load_settings(void)
         fclose(fp);
     }
     g_gain_db = gain;
-    if (chosen_file_exists(connect)) strncpy(g_connect, connect, sizeof(g_connect) - 1);
-    else if (g_sound_count) strncpy(g_connect, g_sound_files[0], sizeof(g_connect) - 1);
+    if (chosen_file_exists(connect)) copy_name(g_connect, sizeof(g_connect), connect);
+    else if (g_sound_count) copy_name(g_connect, sizeof(g_connect), g_sound_files[0]);
     else g_connect[0] = '\0';
 
-    if (chosen_file_exists(disconnect)) strncpy(g_disconnect, disconnect, sizeof(g_disconnect) - 1);
-    else if (g_sound_count) strncpy(g_disconnect, g_sound_files[g_sound_count > 1 ? 1 : 0], sizeof(g_disconnect) - 1);
+    if (chosen_file_exists(disconnect)) copy_name(g_disconnect, sizeof(g_disconnect), disconnect);
+    else if (g_sound_count) copy_name(g_disconnect, sizeof(g_disconnect), g_sound_files[g_sound_count > 1 ? 1 : 0]);
     else g_disconnect[0] = '\0';
 
     g_connect[sizeof(g_connect) - 1] = '\0';
@@ -281,11 +291,11 @@ static void accept_picker(void)
     if (!g_sound_count || g_picker_cursor < 0 || (size_t)g_picker_cursor >= g_sound_count)
         return;
     if (g_ui_mode == UI_PICK_CONNECT) {
-        strncpy(g_connect, g_sound_files[g_picker_cursor], sizeof(g_connect) - 1);
+        copy_name(g_connect, sizeof(g_connect), g_sound_files[g_picker_cursor]);
         g_connect[sizeof(g_connect) - 1] = '\0';
         snprintf(g_status, sizeof(g_status), "Connect sound set: %.170s", g_connect);
     } else {
-        strncpy(g_disconnect, g_sound_files[g_picker_cursor], sizeof(g_disconnect) - 1);
+        copy_name(g_disconnect, sizeof(g_disconnect), g_sound_files[g_picker_cursor]);
         g_disconnect[sizeof(g_disconnect) - 1] = '\0';
         snprintf(g_status, sizeof(g_status), "Disconnect sound set: %.155s", g_disconnect);
     }
@@ -493,7 +503,7 @@ static void draw_picker(void)
 {
     size_t start = g_picker_cursor >= PICKER_ROWS ? (size_t)(g_picker_cursor - PICKER_ROWS + 1) : 0;
     consoleClear();
-    printf("SlideNX Reborn 2.1 - Select %s sound\n\n",
+    printf("SlideNX Reborn 2.2 - Select %s sound\n\n",
            g_ui_mode == UI_PICK_CONNECT ? "CONNECT" : "DISCONNECT");
     printf("Folder: sdmc:/SlideNX/sounds/\nUP/DOWN to navigate; A select; B cancel.\n");
     printf("Found %lu MP3 file(s).\n\n", (unsigned long)g_sound_count);
@@ -514,7 +524,7 @@ static void draw_main(void)
              g_gain_db > 0 ? "+" : "", g_gain_db);
 
     consoleClear();
-    printf("SlideNX Reborn 2.1 - Sound Studio\n");
+    printf("SlideNX Reborn 2.2 - Sound Studio\n");
     printf("=================================\n\n");
     printf("CONNECT:    %s\n", g_connect[0] ? g_connect : "(not selected)");
     printf("DISCONNECT: %s\n\n", g_disconnect[0] ? g_disconnect : "(not selected)");

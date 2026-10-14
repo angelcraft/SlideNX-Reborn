@@ -1,20 +1,22 @@
-# Build and test SlideNX Reborn 2.0
+# Build and test SlideNX Reborn 2.2
 
-This branch builds a foreground homebrew application (NRO), not a sysmodule or NSP.
+This branch builds SlideNX as a foreground homebrew application (.nro), not a sysmodule or NSP.
 
 ## GitHub Actions
 
-Pushes to main, master, or rebuild branches run the build workflow. Open the Actions tab and download the SlideNX-Reborn-NRO artifact from the successful run summary. If the build fails, inspect the compiler log and diagnostic artifact.
+The workflow builds the NRO and uploads it as the SlideNX-Reborn-NRO artifact. Open Actions and download the artifact from a successful run. If the build fails, inspect the compiler log and build diagnostics.
 
-## Install and test
+## Install
 
 1. Back up the SD card.
 2. Copy slidenx.nro to sd:/switch/slidenx.nro.
-3. Place both inputs at sd:/SlideNX/IN.mp3 and sd:/SlideNX/OUT.mp3.
+3. Place MP3 files in sd:/SlideNX/sounds/.
 4. Launch SlideNX from Homebrew Menu.
-5. Press A to convert and verify the success status.
-6. Press Y to install both outputs to LayeredFS.
-7. Reboot and test the connect and disconnect sounds.
-8. Reopen SlideNX and press X to restore the state captured before the first install.
+5. Select connect and disconnect sounds from the file picker.
+6. Optionally adjust conversion gain and preview each selected sound.
+7. Press A on Convert selected sounds.
+8. Press Y or select Install to LayeredFS.
+9. Reboot to test both Joy-Con sounds.
+10. Reopen SlideNX and press X to restore the baseline saved before the first installation.
 
-The app does not install a sysmodule, poll GPIO, change boot flags, or alter Atmosphere configuration. A successful CI build still requires a real Switch test.
+The application does not install a sysmodule, poll GPIO, change boot flags, or alter Atmosphere configuration. Conversion does not install automatically. A successful CI build still requires a real Switch test.

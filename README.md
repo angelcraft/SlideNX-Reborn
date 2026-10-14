@@ -2,7 +2,7 @@
 
 SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmodule.
 
-## New in 2.1
+## New in 2.2
 - Choose any MP3 in sd:/SlideNX/sounds/ for connect and disconnect sounds.
 - Keep original filenames; no renaming to IN.mp3 or OUT.mp3.
 - Persist chosen filenames and gain to sd:/SlideNX/settings.ini.
@@ -20,7 +20,7 @@ SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmod
 4. Open SlideNX, choose connect/disconnect MP3s, and optionally adjust gain.
 5. Preview either sound first if desired.
 6. Press A on Convert selected sounds.
-6. Press Y (or select Install) and reboot to test.
+7. Press Y (or select Install) and reboot to test.
 
 ## Controls
 - UP/DOWN: navigate main menu or picker.
