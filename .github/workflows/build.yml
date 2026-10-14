@@ -83,8 +83,8 @@ jobs:
       - name: Verify output package layout
         shell: bash
         run: |
-          test -s dist/atmosphere/contents/420000000000000F/exefs.nsp
-          test -f dist/atmosphere/contents/420000000000000F/flags/boot2.flag
+          test -s dist/atmosphere/contents/420000000000534E/exefs.nsp
+          test -f dist/atmosphere/contents/420000000000534E/flags/boot2.flag
           test -f dist/SlideNX/config.ini
           test -d dist/SlideNX/sounds
           find dist -type f -print
