@@ -2,12 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TITLE_ID="420000000000000F"
+TITLE_ID="420000000000534E"
 DIST="$ROOT/dist"
 
 if [[ -z "${DEVKITPRO:-}" || ! -f "$DEVKITPRO/libnx/switch_rules" ]]; then
   echo "ERROR: DEVKITPRO/libnx/switch_rules not found." >&2
-  echo "Open the devkitPro MSYS2/terminal environment and install switch-dev + switch-mpg123." >&2
+  echo "Open the devkitPro MSYS2/terminal environment and install switch-dev." >&2
   exit 2
 fi
 
@@ -33,5 +33,6 @@ cp "$ROOT/README.md" "$DIST/README-SlideNX-Reborn.txt"
 
 echo
 echo "Build/package created under: $DIST"
+echo "Module Title ID: $TITLE_ID"
 echo "Copy the contents of dist/ to the root of the Switch SD card."
 echo "This is an untested candidate build; verify on emuMMC first if available."
