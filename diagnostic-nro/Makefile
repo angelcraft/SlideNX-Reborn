@@ -1,5 +1,5 @@
 # SlideNX Reborn GPIO/audio diagnostic homebrew (NRO)
-# Uses the same MP3 playback implementation as the sysmodule candidate.
+# Uses only libnx: the diagnostic plays generated PCM tones and needs no MP3 portlib.
 
 .SUFFIXES:
 
@@ -12,9 +12,9 @@ include $(DEVKITPRO)/libnx/switch_rules
 
 TARGET      := slidenx-diagnostic
 BUILD       := build
-SOURCES     := source ../source
+SOURCES     := source
 DATA        :=
-INCLUDES    := ../include
+INCLUDES    :=
 NO_ICON     := 1
 NO_NACP     := 1
 
@@ -24,7 +24,7 @@ CFLAGS      += $(INCLUDE) -D__SWITCH__
 CXXFLAGS    := $(CFLAGS) -fno-rtti -fno-exceptions
 ASFLAGS     := -g $(ARCH)
 LDFLAGS     = -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
-LIBS        := -lnx -lmpg123 -lm
+LIBS        := -lnx -lm
 LIBDIRS     := $(PORTLIBS) $(LIBNX)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
@@ -66,10 +66,7 @@ DEPENDS := $(OFILES:.o=.d)
 .PHONY: all
 all: $(OUTPUT).nro
 $(OUTPUT).nro: $(OUTPUT).elf
-
 $(OUTPUT).elf: $(OFILES)
-
 $(OFILES_SRC): $(HFILES_BIN)
-
 -include $(DEPENDS)
 endif
