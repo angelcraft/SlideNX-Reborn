@@ -61,7 +61,7 @@ void __attribute__((weak)) __appInit(void)
 
     rc = fsInitialize();
     if (R_FAILED(rc))
-        fatalSimple(MAKERESULT(Module_Libnx, LibnxError_InitFail_FS));
+        fatalThrow(MAKERESULT(Module_Libnx, LibnxError_InitFail_FS));
 }
 
 void __attribute__((weak)) userAppExit(void);
