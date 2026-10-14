@@ -3,6 +3,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <dirent.h>
+#include <errno.h>
 #include <string.h>
 
 #include <switch.h>
@@ -19,6 +21,8 @@ static bool g_left_open;
 static bool g_right_open;
 static bool g_audio_ready;
 static bool g_sd_ready;
+static bool g_sd_direct_access;
+static int g_sd_errno;
 static uint8_t *g_pcm_buffer;
 static AudioOutBuffer g_audio_buffer;
 
@@ -48,8 +52,6 @@ static void cleanup(void)
     free(g_pcm_buffer);
     g_pcm_buffer = NULL;
 
-    if (g_sd_ready)
-        (void)fsdevUnmountAll();
 }
 
 static bool initialize_audio(void)
@@ -164,6 +166,13 @@ int main(void)
 
     g_sd_rc = fsdevMountSdmc();
     g_sd_ready = R_SUCCEEDED(g_sd_rc);
+    {
+        DIR *sd_dir = opendir("sdmc:/switch");
+        g_sd_direct_access = (sd_dir != NULL);
+        g_sd_errno = errno;
+        if (sd_dir != NULL)
+            closedir(sd_dir);
+    }
     (void)initialize_audio();
     initialize_gpio(&left_previous, &right_previous, &left_value_ready, &right_value_ready);
 
@@ -205,6 +214,7 @@ int main(void)
         printf("==================================\n\n");
         printf("Diagnostic NRO only - not the installable sysmodule.\n\n");
         printf("SD mount:    %s (0x%08x)\n", g_sd_ready ? "OK" : "FAILED", (unsigned)g_sd_rc);
+        printf("SD /switch:  %s (errno %d)\n", g_sd_direct_access ? "ACCESSIBLE" : "UNAVAILABLE", g_sd_errno);
         printf("Audio out:   %s (0x%08x)\n", g_audio_ready ? "READY" : "FAILED", (unsigned)g_audio_rc);
         printf("GPIO service:%s (0x%08x)\n", g_gpio_ready ? "READY" : "FAILED", (unsigned)g_gpio_init_rc);
         printf("Left session:%s (0x%08x)\n", g_left_open ? "OPEN" : "NOT OPEN", (unsigned)g_left_open_rc);
