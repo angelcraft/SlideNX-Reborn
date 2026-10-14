@@ -72,11 +72,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Switch MP3 portlib
-        shell: bash
-        run: |
-          dkp-pacman -Sy --noconfirm switch-mpg123
-
       - name: Build and stage SD package
         shell: bash
         run: |
