@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include <switch.h>
+#include <switch/runtime/fatal.h>
 
 #include "mp3.h"
 
