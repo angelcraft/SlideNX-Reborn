@@ -23,9 +23,11 @@ For Horizon 22.0.0, official Atmosphère 1.11.0 added support; 1.11.1 added basi
 
 ## Cloud build with GitHub Actions
 
-The repository includes `.github/workflows/build.yml`. After this source tree is pushed to a GitHub repository, Actions will compile it with the devkitPro Switch toolchain on pushes to `main`/`master`, pull requests, or a manual `workflow_dispatch` run. On success, download the `SlideNX-Reborn-SD-package` artifact from the run's **Summary → Artifacts** section. It contains the staged SD-card files. If compilation fails, download `SlideNX-Reborn-build-diagnostics` and inspect the build log.
+The workflow deliberately builds a small **diagnostic NRO first** on pushes and pull requests. Download `SlideNX-Reborn-Diagnostic-NRO` from the workflow run's **Summary → Artifacts** section, copy the NRO to `sd:/switch/`, and use it to check whether the inherited GPIO IDs `0x0C`/`0x34` can be opened/read and whether the audio output service plays short generated tones.
 
-The workflow only builds and packages the project; a green build is not proof that the sysmodule works on an OLED or on every Horizon 22.x point release. Test on emuMMC or with an SD backup first. The build workflow does not publish a GitHub Release or modify the console automatically.
+Only after you have tested that diagnostic on the OLED should you manually dispatch the workflow with target `sysmodule`. That run builds the diagnostic NRO again first, then attempts to build/package the NSP and uploads `SlideNX-Reborn-SD-package` if successful. Current environment note: devkitPro's package server has returned HTTP 403 to GitHub-hosted Actions runners when downloading `switch-mpg123`; the NRO diagnostic avoids this external MP3 dependency, but the sysmodule build still needs it.
+
+A passing NRO build is not a passing hardware test, and a passing GPIO/audio diagnostic does not validate sysmodule NPDM permissions, startup, or stability. Test on emuMMC or with an SD backup before installing a sysmodule. No workflow modifies the console automatically.
 
 ## Build prerequisites
 
