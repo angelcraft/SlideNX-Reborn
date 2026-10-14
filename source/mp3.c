@@ -9,7 +9,8 @@
 #include "minimp3.h"
 #include "mp3.h"
 
-#define PCM_BUFFER_SIZE 0x1000
+/* 1152 stereo samples * 2 bytes/sample * 2 channels = 4608 bytes. */
+#define PCM_BUFFER_SIZE 0x2000
 
 static uint8_t *g_pcm_buffer;
 static bool g_audout_ready;
