@@ -511,7 +511,7 @@ static void draw_picker(void)
     }
     size_t start = g_picker_cursor >= PICKER_ROWS ? (size_t)(g_picker_cursor - PICKER_ROWS + 1) : 0;
     consoleClear();
-    printf("SlideNX Reborn 2.3 - Select %s sound\n\n",
+    printf("SlideNX Reborn 2.4 - Select %s sound\n\n",
            g_ui_mode == UI_PICK_CONNECT ? "CONNECT" : "DISCONNECT");
     printf("Folder: sdmc:/SlideNX/sounds/\nUP/DOWN to navigate; A select; B cancel.\n");
     printf("Found %lu MP3 file(s).\n\n", (unsigned long)g_sound_count);
@@ -537,7 +537,7 @@ static void draw_main(void)
              g_gain_db > 0 ? "+" : "", g_gain_db);
 
     consoleClear();
-    printf("SlideNX Reborn 2.3 - Sound Studio\n");
+    printf("SlideNX Reborn 2.4 - Sound Studio\n");
     printf("=================================\n\n");
     printf("CONNECT:    %s\n", g_connect[0] ? g_connect : "(not selected)");
     printf("DISCONNECT: %s\n\n", g_disconnect[0] ? g_disconnect : "(not selected)");
