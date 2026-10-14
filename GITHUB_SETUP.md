@@ -1,21 +1,21 @@
-# Getting SlideNX Reborn into a GitHub repository
+# GitHub Actions build
 
-The project already includes a GitHub Actions workflow at `.github/workflows/build.yml`. This conversation's GitHub integration cannot create a brand-new repository, so the first repository creation step must be done by the account owner.
+This repository now includes `.github/workflows/build.yml` on `main`.
 
-1. On GitHub, choose **New repository** and call it `SlideNX-Reborn`. For the simplest first push, leave **Add a README**, `.gitignore`, and license unchecked; these are already in this project.
-2. From a terminal in this project folder, run:
+The workflow triggers on pushes to `main`/`master`, pull requests targeting those branches, and manual `workflow_dispatch`. It installs devkitPro's Switch toolchain and `switch-mpg123`, runs `build_and_package.sh`, validates the staged SD-card layout, and uploads `SlideNX-Reborn-SD-package` as a workflow artifact when successful. On failure it attempts to upload compiler diagnostics.
 
-   ```sh
-   git init
-   git add .
-   git commit -m "Add SlideNX Reborn source and cloud build"
-   git branch -M main
-   git remote add origin https://github.com/YOUR-USERNAME/SlideNX-Reborn.git
-   git push -u origin main
-   ```
+## Run it manually
 
-   Replace `YOUR-USERNAME` with your GitHub username. GitHub may prompt you to authenticate using your configured Git credential manager.
-3. Open the repository's **Actions** tab. The first push should start **SlideNX Reborn build**. Open the run and check **Summary → Artifacts**.
-4. Download `SlideNX-Reborn-SD-package` if the build succeeds. If it fails, download `SlideNX-Reborn-build-diagnostics` and inspect `build.log`.
+1. Open the repository's **Actions** tab: https://github.com/angelcraft/SlideNX-Reborn/actions
+2. Select **SlideNX Reborn build** in the workflow list.
+3. Click **Run workflow** and select `main`.
+4. Open the run to watch build output. A successful run exposes `SlideNX-Reborn-SD-package` under **Summary → Artifacts**.
+5. If it fails, inspect the failed step logs and download `SlideNX-Reborn-build-diagnostics` if available.
 
-Do not paste a personal access token into chat. The project is derived from SlideNX under GPL-2.0; the source and license are included.
+## What a green build means
+
+A successful CI run proves only that the selected toolchain compiled and packaged the source. It does not establish that raw GPIO identifiers `0x0C` and `0x34` work on every Switch OLED or Horizon 22.x point release. Test with an SD backup and preferably emuMMC first. The original behavior of not suppressing Nintendo's own connection sound remains a limitation.
+
+## Install/package layout
+
+The artifact contains a `dist/` directory's contents staged for the SD root, including `atmosphere/contents/420000000000000F/exefs.nsp`, its `flags/boot2.flag`, and `SlideNX/config.ini`. Add MP3 files under `SlideNX/sounds/` yourself.
