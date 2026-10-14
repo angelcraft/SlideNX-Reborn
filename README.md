@@ -31,10 +31,10 @@ A passing NRO build is not a passing hardware test, and a passing GPIO/audio dia
 
 ## Build prerequisites
 
-Use the devkitPro MSYS2 shell (Windows) or a shell configured for devkitPro (Linux/macOS), with a current devkitA64, libnx, and Switch mpg123 portlib installed.
+Use the devkitPro MSYS2 shell (Windows) or a shell configured for devkitPro (Linux/macOS), with a current devkitA64 and libnx installed.
 
 ```sh
-dkp-pacman -S switch-dev switch-mpg123
+dkp-pacman -S switch-dev
 ```
 
 Then from the project folder:
