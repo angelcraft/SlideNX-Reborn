@@ -6,29 +6,85 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      target:
+        description: "Build diagnostic NRO first, or explicitly request the sysmodule build after hardware testing"
+        required: true
+        type: choice
+        default: diagnostic
+        options:
+          - diagnostic
+          - sysmodule
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  diagnostic-nro:
+    name: Build diagnostic NRO
     runs-on: ubuntu-latest
     container:
-      image: devkitpro/devkita64
+      image: devkitpro/devkita64:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install required Switch portlibs
+      - name: Install Switch MP3 portlib
         shell: bash
         run: |
-          pacman -Sy --noconfirm switch-mpg123
+          dkp-pacman -Sy --noconfirm switch-mpg123
+
+      - name: Compile diagnostic NRO
+        shell: bash
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          export PATH="$DEVKITPRO/tools/bin:$DEVKITPRO/devkitA64/bin:$PATH"
+          make -C diagnostic-nro clean all
+          test -s diagnostic-nro/slidenx-diagnostic.nro
+          file diagnostic-nro/slidenx-diagnostic.nro || true
+
+      - name: Upload diagnostic NRO
+        uses: actions/upload-artifact@v4
+        with:
+          name: SlideNX-Reborn-Diagnostic-NRO
+          path: |
+            diagnostic-nro/slidenx-diagnostic.nro
+            diagnostic-nro/README.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve diagnostic compiler output on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SlideNX-Reborn-NRO-build-diagnostics
+          path: |
+            diagnostic-nro/build/
+            diagnostic-nro/slidenx-diagnostic.elf
+            diagnostic-nro/slidenx-diagnostic.map
+          if-no-files-found: ignore
+          retention-days: 7
+
+  sysmodule-nsp:
+    name: Build sysmodule NSP (manual opt-in)
+    needs: diagnostic-nro
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.target == 'sysmodule' }}
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Switch MP3 portlib
+        shell: bash
+        run: |
+          dkp-pacman -Sy --noconfirm switch-mpg123
 
       - name: Build and stage SD package
         shell: bash
         run: |
           export DEVKITPRO=/opt/devkitpro
-          export DEVKITARM="$DEVKITPRO/devkitARM"
           export PATH="$DEVKITPRO/tools/bin:$DEVKITPRO/devkitA64/bin:$PATH"
           chmod +x ./build_and_package.sh
           ./build_and_package.sh
@@ -50,14 +106,16 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Preserve diagnostics on failure
+      - name: Preserve sysmodule compiler output on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: SlideNX-Reborn-build-diagnostics
+          name: SlideNX-Reborn-NSP-build-diagnostics
           path: |
             slidenx.map
             slidenx.elf
+            slidenx.nso
+            slidenx.npdm
             build/
           if-no-files-found: ignore
           retention-days: 7
