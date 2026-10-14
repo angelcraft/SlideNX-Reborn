@@ -13,23 +13,16 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install devkitPro toolchain
+      - name: Install required Switch portlibs
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ca-certificates curl make git
-          # The install script URL has returned HTTP 403 on GitHub-hosted Ubuntu.
-          # Configure the official apt repository directly instead.
-          curl -fsSL https://apt.devkitpro.org/devkitpro-pubkey.asc | sudo gpg --dearmor -o /usr/share/keyrings/devkitpro.gpg
-          echo "deb [signed-by=/usr/share/keyrings/devkitpro.gpg] https://apt.devkitpro.org stable main" | sudo tee /etc/apt/sources.list.d/devkitpro.list
-          sudo apt-get update
-          sudo apt-get install -y devkitpro-pacman
-          sudo dkp-pacman -Syu --noconfirm
-          sudo dkp-pacman -S --noconfirm switch-dev switch-mpg123
+          pacman -Sy --noconfirm switch-mpg123
 
       - name: Build and stage SD package
         shell: bash
