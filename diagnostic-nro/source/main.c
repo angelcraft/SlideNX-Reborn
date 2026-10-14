@@ -24,11 +24,11 @@ static AudioOutBuffer g_audio_buffer;
 
 static Result g_sd_rc;
 static Result g_gpio_init_rc;
-static Result g_left_open_rc;
-static Result g_right_open_rc;
+static Result g_left_open_rc = (Result)0xFFFFFFFF;
+static Result g_right_open_rc = (Result)0xFFFFFFFF;
 static Result g_audio_rc;
-static Result g_left_read_rc;
-static Result g_right_read_rc;
+static Result g_left_read_rc = (Result)0xFFFFFFFF;
+static Result g_right_read_rc = (Result)0xFFFFFFFF;
 
 static void cleanup(void)
 {
@@ -56,7 +56,7 @@ static bool initialize_audio(void)
 {
     g_pcm_buffer = memalign(0x1000, PCM_BUFFER_SIZE);
     if (g_pcm_buffer == NULL) {
-        g_audio_rc = MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
+        g_audio_rc = (Result)1;
         return false;
     }
 
@@ -89,12 +89,12 @@ static Result play_test_tone(double frequency_hz)
 {
     const u32 sample_rate = audoutGetSampleRate();
     if (!g_audio_ready || sample_rate == 0 || g_pcm_buffer == NULL)
-        return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+        return (Result)1;
 
     const size_t frames = sample_rate / 4; /* 250 ms */
     const size_t bytes = frames * 2 * sizeof(int16_t);
     if (bytes > PCM_BUFFER_SIZE)
-        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+        return (Result)2;
 
     int16_t *samples = (int16_t *)g_pcm_buffer;
     for (size_t i = 0; i < frames; i++) {
