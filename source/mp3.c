@@ -94,6 +94,7 @@ int playMp3(const char *file)
 
         AudioOutBuffer audio = {0};
         AudioOutBuffer *released = NULL;
+        u32 released_count = 0;
         audio.buffer = g_pcm_buffer;
         audio.buffer_size = PCM_BUFFER_SIZE;
         audio.data_size = out_samples * sizeof(int16_t);
@@ -102,7 +103,8 @@ int playMp3(const char *file)
         /* Wait until audio service releases the buffer before reusing it. */
         while (released == NULL) {
             svcSleepThread(1000000ULL);
-            (void)audoutWaitPlayFinish(&released, 1, 100000000ULL);
+            released_count = 0;
+            (void)audoutWaitPlayFinish(&released, &released_count, 100000000ULL);
         }
     }
 
