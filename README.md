@@ -43,7 +43,7 @@ Then from the project folder:
 ./build_and_package.sh
 ```
 
-The build script runs `make clean`, builds `slidenx.nsp`, and stages a `dist/` folder. If you prefer manual packaging, run `make clean && make`, then copy `slidenx.nsp` to `atmosphere/contents/420000000000000F/exefs.nsp` and create an empty `atmosphere/contents/420000000000000F/flags/boot2.flag`.
+The build script runs `make clean`, builds `slidenx.nsp`, and stages a `dist/` folder. If you prefer manual packaging, run `make clean && make`, then copy `slidenx.nsp` to `atmosphere/contents/420000000000534E/exefs.nsp` and create an empty `atmosphere/contents/420000000000534E/flags/boot2.flag`.
 
 ## SD card layout
 
@@ -53,7 +53,7 @@ Copy the **contents** of `dist/` to the SD card root. Expected result:
 SD:/
 ├── atmosphere/
 │   └── contents/
-│       └── 420000000000000F/
+│       └── 420000000000534E/
 │           ├── exefs.nsp
 │           └── flags/
 │               └── boot2.flag
@@ -69,14 +69,14 @@ The sample package does not include MP3 audio assets. Add your own MP3 files und
 ## Safe test / rollback plan
 
 1. **Back up the SD card** (or use emuMMC for first testing, if available). Do not replace a working Atmosphère/Hekate installation or alter Nintendo system files.
-2. Compile on the PC. Confirm the build produced `slidenx.nsp` and `dist/atmosphere/contents/420000000000000F/exefs.nsp`.
+2. Compile on the PC. Confirm the build produced `slidenx.nsp` and `dist/atmosphere/contents/420000000000534E/exefs.nsp`.
 3. Copy `dist/` to the SD root while the console is powered off. Keep the original `SlideNX` backup separate.
-4. Boot and check Hekate Toolbox (sysmodule/background services) to see whether title ID `420000000000000F` is running. If it fails to start, remove that title-ID folder from the SD card before rebooting.
+4. Boot and check Hekate Toolbox (sysmodule/background services) to see whether title ID `420000000000534E` is running. If it fails to start, remove that title-ID folder from the SD card before rebooting.
 5. Inspect `SlideNX/SlideNX.log`. Confirm it reports SD mounted, audio runtime ready, and GPIO sessions ready. If GPIO session opening fails, treat the raw pin mapping as incompatible until investigated.
 6. Test one Joy-Con at a time by attaching/detaching it. Note that this code preserves the upstream assumption `GPIO low = attached`; the direction may need reversing if the OLED signals the opposite polarity.
 7. Test fixed mode with short clips first, then random mode with at least two MP3s. Verify audio volume, timing, and behavior while navigating the HOME Menu and resuming from sleep.
 8. Reboot several times and test both Joy-Cons, handheld mode, docked mode if relevant, and sleep/wake. Do not treat a single successful boot as proof of stability.
-9. Roll back by powering off and deleting `atmosphere/contents/420000000000000F/` and `SlideNX/` from the SD card. This does not uninstall or modify Atmosphère itself.
+9. Roll back by powering off and deleting `atmosphere/contents/420000000000534E/` and `SlideNX/` from the SD card. This does not uninstall or modify Atmosphère itself.
 
 ## Known limitations / open questions
 
