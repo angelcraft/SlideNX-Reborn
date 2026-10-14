@@ -1,73 +1,39 @@
-# SlideNX Reborn 2.0 — Sound Converter & LayeredFS Installer
+# SlideNX Reborn 2.1 — Sound Studio
 
-SlideNX Reborn is a foreground Nintendo Switch homebrew application (.nro). It is not a sysmodule and does not poll Joy-Con GPIO or run in the background.
+SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmodule.
 
-Its purpose is to generate and install the connect and disconnect sound replacements tested with LayeredFS.
+## New in 2.1
+- Choose any MP3 in sd:/SlideNX/sounds/ for connect and disconnect sounds.
+- Keep original filenames; no renaming to IN.mp3 or OUT.mp3.
+- Persist chosen filenames and gain to sd:/SlideNX/settings.ini.
+- Adjust conversion gain from -12 dB to +6 dB in 1 dB steps.
+- Convert to headerless signed PCM 16-bit little-endian, mono, 48 kHz.
+- Convert and install remain separate actions.
+- Restore the LayeredFS baseline saved before first installation.
+- If sounds/ is empty, migrate legacy root IN.mp3 and OUT.mp3 into sounds/.
 
-## Features
-
-- Reads IN.mp3 and OUT.mp3 from the SD card.
-- Decodes MP3 audio with the vendored minimp3 library.
-- Converts to headerless signed PCM, 16-bit little-endian, mono, 48,000 Hz.
-- Generates joint.raw and joint_out.raw.
-- Installs both outputs to the known overlayDisp LayeredFS path.
-- Captures a baseline backup before the first installation.
-- Supports restoring the previous override, or removing overrides that did not exist before SlideNX was used.
-- Converting audio alone never changes the LayeredFS target files.
-
-## SD card setup
-
-Back up your SD card before the first test.
-
-Copy slidenx.nro to:
-
-    sd:/switch/slidenx.nro
-
-Create sd:/SlideNX/ and place both MP3 files there:
-
-- sd:/SlideNX/IN.mp3 — Joy-Con connect sound.
-- sd:/SlideNX/OUT.mp3 — Joy-Con disconnect sound.
-
-Open SlideNX from Homebrew Menu.
+## Setup
+1. Back up the SD card.
+2. Copy slidenx.nro to sd:/switch/slidenx.nro.
+3. Put MP3 files in sd:/SlideNX/sounds/.
+4. Open SlideNX, choose connect/disconnect MP3s, and optionally adjust gain.
+5. Press A on Convert selected sounds.
+6. Press Y (or select Install) and reboot to test.
 
 ## Controls
+- UP/DOWN: navigate main menu or picker.
+- A: choose a sound / activate selected menu item.
+- LEFT/RIGHT: adjust gain by 1 dB while gain row is highlighted.
+- B: refresh file list / cancel picker.
+- Y: install converted RAWs.
+- X: restore original LayeredFS state.
+- PLUS: exit or cancel picker.
 
-- A — Convert both MP3 files.
-- Y — Install both converted RAW files to LayeredFS.
-- X — Restore the baseline state saved before the first installation.
-- B — Refresh file status.
-- Plus — Exit.
+## Paths
+Converted output: sd:/SlideNX/output/joint.raw and joint_out.raw.
+LayeredFS target: sd:/atmosphere/contents/010000000000100C/romfs/sound/.
 
-Converted files are stored at:
+## Notes
+MP3 files are limited to 16 MiB and 120 seconds, and must use a constant sample rate. Gain is applied during conversion; positive gain may clip peaks. The current UI is controller-driven text; preview and trim are planned. A successful build does not replace testing on the Switch OLED. Keep sd:/SlideNX/backup/ until restore has been verified.
 
-- sd:/SlideNX/output/joint.raw
-- sd:/SlideNX/output/joint_out.raw
-
-LayeredFS target:
-
-- sd:/atmosphere/contents/010000000000100C/romfs/sound/joint.raw
-- sd:/atmosphere/contents/010000000000100C/romfs/sound/joint_out.raw
-
-Reboot after installing so the system reloads the override.
-
-## Safety and limits
-
-- This rewrite must be compiled and then tested on hardware; a successful build is not a guarantee of runtime behavior.
-- MP3 input is limited to 16 MiB and 120 seconds of decoded source audio.
-- Sample rate must remain constant across the MP3.
-- Audio is downmixed to mono and linearly resampled to 48 kHz.
-- The app changes only the two specified LayeredFS sound files. It does not change Atmosphere configuration, boot flags, GPIO, or system modules.
-- Keep sd:/SlideNX/backup/ until restoration has been tested. It stores the state of these two LayeredFS files, not a full SD backup.
-
-## Build
-
-Install devkitPro with the Switch development toolchain (switch-dev). From the repository root, run:
-
-    make clean
-    make
-
-The output is slidenx.nro. GitHub Actions builds the same application and provides it as an artifact.
-
-## Attribution and license
-
-This project is based on the SlideNX-Reborn repository and the upstream SlideNX work by jonyluke. The project uses GNU GPL v2; see LICENSE. The vendored minimp3 header retains its upstream license and attribution notices.
+Based on SlideNX-Reborn and upstream SlideNX by jonyluke. See LICENSE for GPL v2. Vendored minimp3 notices remain in include/minimp3.h.
