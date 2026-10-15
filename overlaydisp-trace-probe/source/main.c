@@ -1,6 +1,8 @@
 #include <switch.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdarg.h>
@@ -70,10 +72,32 @@ static int try_connect(const char *ip)
     timeout_socket(fd);
     struct sockaddr_in a; memset(&a, 0, sizeof(a));
     a.sin_family = AF_INET; a.sin_port = htons(PORT);
-    if (inet_pton(AF_INET, ip, &a.sin_addr) != 1 ||
-        connect(fd, (struct sockaddr *)&a, sizeof(a)) != 0) {
+    if (inet_pton(AF_INET, ip, &a.sin_addr) != 1) {
         close(fd); return -1;
     }
+
+    /* Bound connect() explicitly: SO_SNDTIMEO doesn't bound connect everywhere. */
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        close(fd); return -1;
+    }
+    int rc = connect(fd, (struct sockaddr *)&a, sizeof(a));
+    if (rc != 0 && errno != EINPROGRESS && errno != EWOULDBLOCK) {
+        close(fd); return -1;
+    }
+    if (rc != 0) {
+        fd_set wfds; FD_ZERO(&wfds); FD_SET(fd, &wfds);
+        struct timeval tv = {2, 0};
+        rc = select(fd + 1, NULL, &wfds, NULL, &tv);
+        if (rc <= 0) {
+            close(fd); errno = ETIMEDOUT; return -1;
+        }
+        int err = 0; socklen_t errlen = sizeof(err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &errlen) != 0 || err != 0) {
+            close(fd); errno = err ? err : ECONNREFUSED; return -1;
+        }
+    }
+    (void)fcntl(fd, F_SETFL, flags);
     return fd;
 }
 static bool send_all(int fd, const char *p, size_t n)
@@ -193,20 +217,37 @@ static unsigned long find_pid(const char *xml)
     while (gt[n] >= '0' && gt[n] <= '9' && n + 1 < sizeof(digits)) { digits[n] = gt[n]; ++n; }
     digits[n] = 0; return n ? strtoul(digits, NULL, 10) : 0;
 }
+static void draw_ui(void)
+{
+    consoleClear();
+    printf("OVERLAYDISP TRACE PROBE\n=======================\n\n");
+    printf("Read-only GDB query; no patches or memory writes.\n\n");
+    printf("Status: %s\n\n", status_line);
+    printf("A: start / retry probe\nPLUS: exit\n\n");
+    printf("Report: %s\n", REPORT);
+    consoleUpdate(NULL);
+}
+
 static void run_probe(void)
 {
     loglen = 0; logbuf[0] = 0;
     logf1("OverlayDispTraceProbe report\nProgram ID: 010000000000100C\n");
     logf1("Read-only process/module snapshot. No breakpoints or memory writes.\n");
+    snprintf(status_line, sizeof(status_line), "Starting network probe...");
+    draw_ui();
     Result rc = socketInitializeDefault();
     if (R_FAILED(rc)) {
         logf1("socketInitializeDefault failed: 0x%08x\n", (unsigned)rc);
         snprintf(status_line, sizeof(status_line), "Socket init failed: 0x%08x", (unsigned)rc);
         save_log(); return;
     }
+    snprintf(status_line, sizeof(status_line), "Detecting local network address...");
+    draw_ui();
     struct in_addr local; char ip[INET_ADDRSTRLEN] = "127.0.0.1";
     bool have_ip = get_local_ip(&local);
     if (have_ip) (void)snprintf(ip, sizeof(ip), "%s", inet_ntoa(local));
+    snprintf(status_line, sizeof(status_line), "Connecting to GDB stub (2 s timeout per address)...");
+    draw_ui();
     int fd = try_connect("127.0.0.1"); const char *used_ip = "127.0.0.1";
     if (fd < 0 && have_ip) { fd = try_connect(ip); used_ip = ip; }
     if (fd < 0) {
@@ -218,9 +259,13 @@ static void run_probe(void)
     logf1("Connected to %s:%d\n", used_ip, PORT);
     (void)snprintf(status_line, sizeof(status_line), "Connected; querying process list...");
     char reply[PKT + 1];
+    snprintf(status_line, sizeof(status_line), "Connected. Querying debugger...");
+    draw_ui();
     if (command(fd, "qSupported", reply, sizeof(reply))) logf1("\n--- qSupported ---\n%s\n", reply);
     else logf1("qSupported timeout\n");
 
+    snprintf(status_line, sizeof(status_line), "Reading process list...");
+    draw_ui();
     char *xml = calloc(1, 50001);
     unsigned long pid = 0;
     if (xml && process_xml(fd, xml, 50001)) pid = find_pid(xml);
@@ -229,7 +274,8 @@ static void run_probe(void)
         snprintf(status_line, sizeof(status_line), "Process list saved; inspect report.txt.");
     } else {
         logf1("\nFound overlayDisp PID decimal=%lu hex=%lx\n", pid, pid);
-        snprintf(status_line, sizeof(status_line), "Found PID %lu; briefly querying module map...", pid);
+        snprintf(status_line, sizeof(status_line), "Found PID %lu; querying module map...", pid);
+        draw_ui();
         char q[64];
         (void)snprintf(q, sizeof(q), "vAttach;%lx", pid);
         if (command(fd, q, reply, sizeof(reply))) {
@@ -256,15 +302,8 @@ int main(void)
         padUpdate(&pad); u64 down = padGetButtonsDown(&pad);
         if (down & HidNpadButton_Plus) break;
         if (down & HidNpadButton_A) { snprintf(status_line, sizeof(status_line), "Running probe..."); run_probe(); }
-        consoleClear();
-        printf("OVERLAYDISP TRACE PROBE\n=======================\n\n");
-        printf("Read-only GDB query. No IPS, breakpoints or memory writes.\n\n");
-        printf("Status: %s\n\n", status_line);
-        printf("Before A: enable Atmosphere standalone GDB stub,\n");
-        printf("set enable_htc=u8!0x0, and reboot on private Wi-Fi.\n\n");
-        printf("A: collect process and module report\nPLUS: exit\n\n");
-        printf("Output: %s\n", REPORT);
-        consoleUpdate(NULL); svcSleepThread(20000000ULL);
+        draw_ui();
+        svcSleepThread(20000000ULL);
     }
     consoleExit(NULL); return 0;
 }
