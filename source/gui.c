@@ -236,7 +236,7 @@ static void frame_end(void)
 
 static void draw_header(const char *title, const char *subtitle)
 {
-    text_draw("SLIDENX REBORN 2.5", 34, 22, 3, C_TEXT, 36);
+    text_draw("SLIDENX REBORN 2.6", 34, 22, 3, C_TEXT, 36);
     text_draw(title, 35, 64, 2, C_ACCENT, 36);
     draw_truncated(subtitle, 800, 55, 2, C_MUTED, 440);
     line(30, 94, 1250, 94, C_BORDER);
@@ -446,7 +446,7 @@ void gui_draw_audio_lab(bool connecting, const char *filename,
         const char *value = row == 0 ? start : row == 1 ? end : row == 2 ? fade_in : fade_out;
         draw_truncated(value, 500, y + 12, 2, active ? C_ACCENT : C_TEXT, 320);
         if (row < 2)
-            text_draw("250 MS STEPS", 900, y + 15, 1, C_MUTED, 22);
+            text_draw(row < 2 ? "50 MS STEPS" : "250 MS STEPS", 900, y + 15, 1, C_MUTED, 22);
         else
             text_draw("FADE DURATION", 900, y + 15, 1, C_MUTED, 22);
     }
