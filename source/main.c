@@ -355,6 +355,137 @@ static void accept_picker(void)
     g_ui_mode = UI_MAIN;
 }
 
+
+static AudioTrimOptions *audio_lab_options(void)
+{
+    return g_audio_lab_connect ? &g_connect_trim : &g_disconnect_trim;
+}
+
+static const char *audio_lab_filename(void)
+{
+    return g_audio_lab_connect ? g_connect : g_disconnect;
+}
+
+static void analyze_audio_lab_source(void)
+{
+    char path[PATH_MAX_NX], error[192] = "";
+    memset(&g_audio_lab_info, 0, sizeof(g_audio_lab_info));
+    const char *name = audio_lab_filename();
+    if (!sound_path(name, path, sizeof(path)) || !regular_nonempty(path)) {
+        snprintf(g_status, sizeof(g_status), "Choose a valid MP3 before opening Audio Lab.");
+        return;
+    }
+    if (audio_lab_analyze_mp3(path, &g_audio_lab_info, error, sizeof(error)) != 0) {
+        snprintf(g_status, sizeof(g_status), "Audio analysis failed: %.180s", error);
+        return;
+    }
+    snprintf(g_status, sizeof(g_status), "Analyzed %.120s (%lu ms).", name,
+             (unsigned long)g_audio_lab_info.duration_ms);
+}
+
+static void open_audio_lab(void)
+{
+    g_audio_lab_connect = true;
+    g_audio_lab_row = 0;
+    analyze_audio_lab_source();
+    g_ui_mode = UI_AUDIO_LAB;
+}
+
+static void change_audio_lab_source(bool connecting)
+{
+    if (g_audio_lab_connect == connecting) return;
+    g_audio_lab_connect = connecting;
+    g_audio_lab_row = 0;
+    analyze_audio_lab_source();
+}
+
+static void adjust_audio_lab(int delta)
+{
+    AudioTrimOptions *options = audio_lab_options();
+    uint32_t duration = g_audio_lab_info.valid ? g_audio_lab_info.duration_ms : 120000U;
+    if (duration < 250U) {
+        snprintf(g_status, sizeof(g_status), "Audio is too short to trim.");
+        return;
+    }
+    int64_t current, maximum, minimum;
+    switch (g_audio_lab_row) {
+        case 0:
+            current = (int64_t)options->trim_start_ms + (int64_t)delta * 250;
+            maximum = (int64_t)duration - 250;
+            if (options->trim_end_ms && maximum > (int64_t)options->trim_end_ms - 250)
+                maximum = (int64_t)options->trim_end_ms - 250;
+            if (current < 0) current = 0;
+            if (current > maximum) current = maximum;
+            options->trim_start_ms = (uint32_t)current;
+            break;
+        case 1:
+            current = options->trim_end_ms ? options->trim_end_ms : duration;
+            current += (int64_t)delta * 250;
+            minimum = (int64_t)options->trim_start_ms + 250;
+            maximum = duration;
+            if (current < minimum) current = minimum;
+            if (current > maximum) current = maximum;
+            options->trim_end_ms = current >= (int64_t)duration ? 0U : (uint32_t)current;
+            break;
+        case 2:
+            current = (int64_t)options->fade_in_ms + (int64_t)delta * 250;
+            maximum = duration < 10000U ? duration : 10000U;
+            if (current < 0) current = 0;
+            if (current > maximum) current = maximum;
+            options->fade_in_ms = (uint32_t)current;
+            break;
+        case 3:
+            current = (int64_t)options->fade_out_ms + (int64_t)delta * 250;
+            maximum = duration < 10000U ? duration : 10000U;
+            if (current < 0) current = 0;
+            if (current > maximum) current = maximum;
+            options->fade_out_ms = (uint32_t)current;
+            break;
+        default: return;
+    }
+    g_outputs_ready = false;
+    if (!save_settings())
+        snprintf(g_status, sizeof(g_status), "Audio Lab value changed; failed to save settings.");
+    else
+        snprintf(g_status, sizeof(g_status), "Audio Lab settings saved to settings.ini.");
+}
+
+static void reset_audio_lab(void)
+{
+    memset(audio_lab_options(), 0, sizeof(AudioTrimOptions));
+    g_outputs_ready = false;
+    if (!save_settings())
+        snprintf(g_status, sizeof(g_status), "Reset, but failed to save settings.ini.");
+    else
+        snprintf(g_status, sizeof(g_status), "Trim and fades reset for this sound.");
+}
+
+static void draw_audio_lab(void)
+{
+    if (g_ui_graphical) {
+        gui_draw_audio_lab(g_audio_lab_connect, audio_lab_filename(), &g_audio_lab_info,
+                           audio_lab_options(), g_audio_lab_row, g_status);
+    } else {
+        consoleClear();
+        printf("SlideNX Reborn 2.5 - Audio Lab\n\n");
+        printf("Source: %s (%s)\n", audio_lab_filename(),
+               g_audio_lab_connect ? "CONNECT" : "DISCONNECT");
+        if (g_audio_lab_info.valid)
+            printf("Duration: %lu ms  Peak: %.1f dBFS  RMS: %.1f dBFS\n",
+                   (unsigned long)g_audio_lab_info.duration_ms,
+                   g_audio_lab_info.peak_dbfs, g_audio_lab_info.rms_dbfs);
+        const AudioTrimOptions *o = audio_lab_options();
+        printf("%c Trim start: %u ms\n", g_audio_lab_row == 0 ? '>' : ' ', o->trim_start_ms);
+        printf("%c Trim end: %s%u ms\n", g_audio_lab_row == 1 ? '>' : ' ',
+               o->trim_end_ms ? "" : "AUTO / ", o->trim_end_ms);
+        printf("%c Fade in: %u ms\n", g_audio_lab_row == 2 ? '>' : ' ', o->fade_in_ms);
+        printf("%c Fade out: %u ms\n\n", g_audio_lab_row == 3 ? '>' : ' ', o->fade_out_ms);
+        printf("UP/DOWN row LEFT/RIGHT adjust A preview L/R source X reset B back PLUS exit\n");
+        printf("Status: %s\n", g_status);
+        consoleUpdate(NULL);
+    }
+}
+
 static void convert_both(void)
 {
     char in_path[PATH_MAX_NX], out_path[PATH_MAX_NX], error[192] = "";
