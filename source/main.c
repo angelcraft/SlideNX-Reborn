@@ -23,6 +23,10 @@
 #define RAW_OUT OUTPUT_DIR "/joint_out.raw"
 #define TMP_IN OUTPUT_DIR "/joint.raw.tmp"
 #define TMP_OUT OUTPUT_DIR "/joint_out.raw.tmp"
+#define PREVIOUS_RAW_IN OUTPUT_DIR "/joint.raw.slidenx-prev"
+#define PREVIOUS_RAW_OUT OUTPUT_DIR "/joint_out.raw.slidenx-prev"
+#define CONVERSION_META ROOT "/conversion.meta"
+#define CONVERSION_META_TMP ROOT "/conversion.meta.tmp"
 #define BACKUP_DIR ROOT "/backup"
 #define BACKUP_IN BACKUP_DIR "/joint.raw"
 #define BACKUP_OUT BACKUP_DIR "/joint_out.raw"
@@ -213,6 +217,112 @@ static bool chosen_file_exists(const char *name)
     return sound_path(name, path, sizeof(path)) && regular_nonempty(path);
 }
 
+static uint64_t hash_bytes(uint64_t hash, const void *data, size_t size)
+{
+    const unsigned char *bytes = (const unsigned char *)data;
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static bool hash_source_file(uint64_t *hash, const char *name)
+{
+    char path[PATH_MAX_NX];
+    struct stat st;
+    if (!name || !name[0] || !sound_path(name, path, sizeof(path)) ||
+        stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0)
+        return false;
+    *hash = hash_bytes(*hash, name, strlen(name) + 1U);
+    *hash = hash_bytes(*hash, &st.st_size, sizeof(st.st_size));
+    *hash = hash_bytes(*hash, &st.st_mtime, sizeof(st.st_mtime));
+    return true;
+}
+
+/* Includes selected filenames, source size/mtime, gain, trim and fade settings. */
+static bool current_source_signature(char *output, size_t output_size)
+{
+    uint64_t hash = 1469598103934665603ULL;
+    int n;
+    if (!output || output_size < 17U ||
+        !hash_source_file(&hash, g_connect) ||
+        !hash_source_file(&hash, g_disconnect))
+        return false;
+
+    hash = hash_bytes(hash, &g_gain_db, sizeof(g_gain_db));
+    hash = hash_bytes(hash, &g_connect_trim.trim_start_ms, sizeof(g_connect_trim.trim_start_ms));
+    hash = hash_bytes(hash, &g_connect_trim.trim_end_ms, sizeof(g_connect_trim.trim_end_ms));
+    hash = hash_bytes(hash, &g_connect_trim.fade_in_ms, sizeof(g_connect_trim.fade_in_ms));
+    hash = hash_bytes(hash, &g_connect_trim.fade_out_ms, sizeof(g_connect_trim.fade_out_ms));
+    hash = hash_bytes(hash, &g_disconnect_trim.trim_start_ms, sizeof(g_disconnect_trim.trim_start_ms));
+    hash = hash_bytes(hash, &g_disconnect_trim.trim_end_ms, sizeof(g_disconnect_trim.trim_end_ms));
+    hash = hash_bytes(hash, &g_disconnect_trim.fade_in_ms, sizeof(g_disconnect_trim.fade_in_ms));
+    hash = hash_bytes(hash, &g_disconnect_trim.fade_out_ms, sizeof(g_disconnect_trim.fade_out_ms));
+
+    n = snprintf(output, output_size, "%016llx", (unsigned long long)hash);
+    return n == 16 && (size_t)n < output_size;
+}
+
+static bool write_conversion_metadata(const char *source_signature)
+{
+    FILE *fp;
+    struct stat in_st, out_st;
+    if (!source_signature || !regular_nonempty(RAW_IN) || !regular_nonempty(RAW_OUT) ||
+        stat(RAW_IN, &in_st) != 0 || stat(RAW_OUT, &out_st) != 0)
+        return false;
+
+    fp = fopen(CONVERSION_META_TMP, "w");
+    if (!fp) return false;
+    if (fprintf(fp, "%s %lld %lld %lld %lld\n", source_signature,
+                (long long)in_st.st_size, (long long)in_st.st_mtime,
+                (long long)out_st.st_size, (long long)out_st.st_mtime) < 0) {
+        fclose(fp);
+        (void)remove_if_exists(CONVERSION_META_TMP);
+        return false;
+    }
+    if (fclose(fp) != 0) {
+        (void)remove_if_exists(CONVERSION_META_TMP);
+        return false;
+    }
+    if (!remove_if_exists(CONVERSION_META) || rename(CONVERSION_META_TMP, CONVERSION_META) != 0) {
+        (void)remove_if_exists(CONVERSION_META_TMP);
+        return false;
+    }
+    return true;
+}
+
+static bool conversion_metadata_matches(void)
+{
+    char expected[24], stored[24] = "";
+    long long in_size, in_mtime, out_size, out_mtime;
+    struct stat in_st, out_st;
+    FILE *fp;
+    int scanned;
+
+    if (!current_source_signature(expected, sizeof(expected)) ||
+        !regular_nonempty(RAW_IN) || !regular_nonempty(RAW_OUT) ||
+        stat(RAW_IN, &in_st) != 0 || stat(RAW_OUT, &out_st) != 0)
+        return false;
+    fp = fopen(CONVERSION_META, "r");
+    if (!fp) return false;
+    scanned = fscanf(fp, "%23s %lld %lld %lld %lld", stored,
+                     &in_size, &in_mtime, &out_size, &out_mtime);
+    fclose(fp);
+    return scanned == 5 && strcmp(expected, stored) == 0 &&
+           in_size == (long long)in_st.st_size &&
+           in_mtime == (long long)in_st.st_mtime &&
+           out_size == (long long)out_st.st_size &&
+           out_mtime == (long long)out_st.st_mtime;
+}
+
+static bool restore_previous_output(const char *target, const char *previous, bool existed)
+{
+    if (!remove_if_exists(target)) return false;
+    if (!existed) return true;
+    return regular_nonempty(previous) && rename(previous, target) == 0;
+}
+
 static bool save_settings(void)
 {
     FILE *fp;
@@ -317,7 +427,7 @@ static void refresh_all(void)
     if (!ensure_app_dirs()) { snprintf(g_status, sizeof(g_status), "Could not create SlideNX folders."); return; }
     migrate_legacy();
     load_settings();
-    g_outputs_ready = regular_nonempty(RAW_IN) && regular_nonempty(RAW_OUT);
+    g_outputs_ready = conversion_metadata_matches();
     snprintf(g_status, sizeof(g_status), "Found %lu MP3 file(s). Settings loaded.",
              (unsigned long)g_sound_count);
 }
@@ -489,11 +599,17 @@ static void draw_audio_lab(void)
 static void convert_both(void)
 {
     char in_path[PATH_MAX_NX], out_path[PATH_MAX_NX], error[192] = "";
+    char initial_signature[24], final_signature[24];
+    bool old_in, old_out;
     g_outputs_ready = false;
     if (!sound_path(g_connect, in_path, sizeof(in_path)) ||
         !sound_path(g_disconnect, out_path, sizeof(out_path)) ||
         !regular_nonempty(in_path) || !regular_nonempty(out_path)) {
         snprintf(g_status, sizeof(g_status), "Choose valid connect and disconnect MP3s first.");
+        return;
+    }
+    if (!current_source_signature(initial_signature, sizeof(initial_signature))) {
+        snprintf(g_status, sizeof(g_status), "Cannot fingerprint source MP3s; conversion cancelled.");
         return;
     }
     if (!ensure_app_dirs()) { snprintf(g_status, sizeof(g_status), "Could not create output folder."); return; }
@@ -512,10 +628,49 @@ static void convert_both(void)
         snprintf(g_status, sizeof(g_status), "Empty RAW output. LayeredFS was not changed.");
         (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT); return;
     }
+    if (!current_source_signature(final_signature, sizeof(final_signature)) ||
+        strcmp(initial_signature, final_signature) != 0) {
+        snprintf(g_status, sizeof(g_status), "Source files or settings changed during conversion; retry.");
+        (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT); return;
+    }
+
+    old_in = exists(RAW_IN);
+    old_out = exists(RAW_OUT);
+    if ((old_in && !regular_nonempty(RAW_IN)) || (old_out && !regular_nonempty(RAW_OUT))) {
+        snprintf(g_status, sizeof(g_status), "Existing output path is not a valid RAW file; refusing overwrite.");
+        (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT); return;
+    }
+    (void)remove_if_exists(PREVIOUS_RAW_IN);
+    (void)remove_if_exists(PREVIOUS_RAW_OUT);
+    if ((old_in && !copy_file(RAW_IN, PREVIOUS_RAW_IN)) ||
+        (old_out && !copy_file(RAW_OUT, PREVIOUS_RAW_OUT))) {
+        snprintf(g_status, sizeof(g_status), "Could not stage previous RAWs; old outputs kept.");
+        (void)remove_if_exists(PREVIOUS_RAW_IN); (void)remove_if_exists(PREVIOUS_RAW_OUT);
+        (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT); return;
+    }
+
+    /* Invalidate before replacing either file so a partial pair can never be installed. */
+    (void)remove_if_exists(CONVERSION_META);
+    (void)remove_if_exists(CONVERSION_META_TMP);
     if (!remove_if_exists(RAW_IN) || rename(TMP_IN, RAW_IN) != 0 ||
         !remove_if_exists(RAW_OUT) || rename(TMP_OUT, RAW_OUT) != 0) {
-        snprintf(g_status, sizeof(g_status), "Could not save both RAW files. LayeredFS was not changed.");
-        (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT); return;
+        bool restore_in = restore_previous_output(RAW_IN, PREVIOUS_RAW_IN, old_in);
+        bool restore_out = restore_previous_output(RAW_OUT, PREVIOUS_RAW_OUT, old_out);
+        (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT);
+        (void)remove_if_exists(PREVIOUS_RAW_IN); (void)remove_if_exists(PREVIOUS_RAW_OUT);
+        g_outputs_ready = false;
+        snprintf(g_status, sizeof(g_status), "RAW pair save failed; rollback %s. Convert again before install.",
+                 restore_in && restore_out ? "OK" : "FAILED");
+        return;
+    }
+    (void)remove_if_exists(PREVIOUS_RAW_IN);
+    (void)remove_if_exists(PREVIOUS_RAW_OUT);
+    if (!regular_nonempty(RAW_IN) || !regular_nonempty(RAW_OUT) ||
+        !write_conversion_metadata(initial_signature)) {
+        (void)remove_if_exists(CONVERSION_META);
+        g_outputs_ready = false;
+        snprintf(g_status, sizeof(g_status), "RAWs saved, but validation metadata failed; convert again before install.");
+        return;
     }
     g_outputs_ready = true;
     (void)save_settings();
