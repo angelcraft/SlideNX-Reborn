@@ -403,25 +403,25 @@ static void adjust_audio_lab(int delta)
 {
     AudioTrimOptions *options = audio_lab_options();
     uint32_t duration = g_audio_lab_info.valid ? g_audio_lab_info.duration_ms : 120000U;
-    if (duration < 250U) {
+    if (duration < 50U) {
         snprintf(g_status, sizeof(g_status), "Audio is too short to trim.");
         return;
     }
     int64_t current, maximum, minimum;
     switch (g_audio_lab_row) {
         case 0:
-            current = (int64_t)options->trim_start_ms + (int64_t)delta * 250;
-            maximum = (int64_t)duration - 250;
+            current = (int64_t)options->trim_start_ms + (int64_t)delta * 50;
+            maximum = (int64_t)duration - 50;
             if (options->trim_end_ms && maximum > (int64_t)options->trim_end_ms - 250)
-                maximum = (int64_t)options->trim_end_ms - 250;
+                maximum = (int64_t)options->trim_end_ms - 50;
             if (current < 0) current = 0;
             if (current > maximum) current = maximum;
             options->trim_start_ms = (uint32_t)current;
             break;
         case 1:
             current = options->trim_end_ms ? options->trim_end_ms : duration;
-            current += (int64_t)delta * 250;
-            minimum = (int64_t)options->trim_start_ms + 250;
+            current += (int64_t)delta * 50;
+            minimum = (int64_t)options->trim_start_ms + 50;
             maximum = duration;
             if (current < minimum) current = minimum;
             if (current > maximum) current = maximum;
@@ -467,7 +467,7 @@ static void draw_audio_lab(void)
                            audio_lab_options(), g_audio_lab_row, g_status);
     } else {
         consoleClear();
-        printf("SlideNX Reborn 2.5 - Audio Lab\n\n");
+        printf("SlideNX Reborn 2.6 - Audio Lab\n\n");
         printf("Source: %s (%s)\n", audio_lab_filename(),
                g_audio_lab_connect ? "CONNECT" : "DISCONNECT");
         if (g_audio_lab_info.valid)
@@ -690,7 +690,7 @@ static void draw_picker(void)
     }
     size_t start = g_picker_cursor >= PICKER_ROWS ? (size_t)(g_picker_cursor - PICKER_ROWS + 1) : 0;
     consoleClear();
-    printf("SlideNX Reborn 2.5 - Select %s sound\n\n",
+    printf("SlideNX Reborn 2.6 - Select %s sound\n\n",
            g_ui_mode == UI_PICK_CONNECT ? "CONNECT" : "DISCONNECT");
     printf("Folder: sdmc:/SlideNX/sounds/\nUP/DOWN to navigate; A select; B cancel.\n");
     printf("Found %lu MP3 file(s).\n\n", (unsigned long)g_sound_count);
@@ -716,7 +716,7 @@ static void draw_main(void)
              g_gain_db > 0 ? "+" : "", g_gain_db);
 
     consoleClear();
-    printf("SlideNX Reborn 2.5 - Sound Studio\n");
+    printf("SlideNX Reborn 2.6 - Sound Studio\n");
     printf("=================================\n\n");
     printf("CONNECT:    %s\n", g_connect[0] ? g_connect : "(not selected)");
     printf("DISCONNECT: %s\n\n", g_disconnect[0] ? g_disconnect : "(not selected)");
