@@ -326,6 +326,71 @@ static void set_socket_timeout_ms(int fd, long ms)
     (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
+/* Read-only memory inspection. RSP uses hexadecimal address and byte length. */
+static bool rsp_read_memory(int fd, uint64_t address, size_t length, char *hex, size_t cap)
+{
+    char q[96];
+    if (length == 0 || length > (PKT / 2) || cap < length * 2 + 1) {
+        logf1("Memory read parameters invalid (length=%zu, cap=%zu).\n", length, cap);
+        return false;
+    }
+    (void)snprintf(q, sizeof(q), "m%" PRIx64 ",%zx", address, length);
+    if (!command(fd, q, hex, cap)) {
+        logf1("Memory read timed out at 0x%" PRIx64 ".\n", address);
+        return false;
+    }
+    if (strlen(hex) != length * 2 || !is_hex_payload(hex)) {
+        logf1("Memory read at 0x%" PRIx64 " returned an unexpected payload (length=%zu): %.80s\n",
+              address, strlen(hex), hex);
+        return false;
+    }
+    return true;
+}
+
+static void dump_candidate_code(int fd, uint64_t module_base)
+{
+    /* This is read before breakpoints are installed, so the dump contains
+       original instruction bytes, not debugger trap instructions. */
+    const uint64_t start = module_base + SITE_A - 0x20;
+    const size_t length = 0x80; /* Covers A, B and surrounding instructions. */
+    char hex[(0x80 * 2) + 1];
+    logf1("\n--- read-only candidate instruction bytes ---\n");
+    logf1("Architecture: AArch64, little-endian; dump address=0x%" PRIx64 ", length=0x%zx\n",
+          start, length);
+    if (rsp_read_memory(fd, start, length, hex, sizeof(hex))) {
+        logf1("Code bytes (hex, address +0x0 is first byte):\n%s\n", hex);
+    } else {
+        logf1("Could not read candidate instruction bytes; continuing only if user chooses to trace.\n");
+    }
+}
+
+static void dump_hit_registers(int fd, const char *site, uint64_t pc)
+{
+    char cmd[8], reply[PKT + 1];
+    uint64_t value = 0;
+    logf1("Hit context %s: PC=0x%" PRIx64 "\n", site, pc);
+    for (unsigned i = 0; i < 8; ++i) {
+        (void)snprintf(cmd, sizeof(cmd), "p%x", i);
+        if (command(fd, cmd, reply, sizeof(reply)) && parse_le_u64(reply, &value)) {
+            logf1("  x%u=0x%" PRIx64 "\n", i, value);
+        } else {
+            logf1("  x%u=<unavailable: %.40s>\n", i, reply);
+        }
+    }
+    const struct { const char *name; const char *reg; } extra[] = {
+        {"x29", "p1d"}, {"x30/LR", "p1e"}, {"SP", "p1f"}
+    };
+    for (size_t i = 0; i < sizeof(extra) / sizeof(extra[0]); ++i) {
+        if (command(fd, extra[i].reg, reply, sizeof(reply)) &&
+            parse_le_u64(reply, &value)) {
+            logf1("  %s=0x%" PRIx64 "\n", extra[i].name, value);
+        } else {
+            logf1("  %s=<unavailable: %.40s>\n", extra[i].name, reply);
+        }
+    }
+    save_log();
+}
+
 static bool rsp_breakpoint(int fd, bool add, uint64_t address)
 {
     char q[80], reply[PKT + 1];
@@ -500,6 +565,8 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
         return false;
     }
 
+    dump_candidate_code(fd, module_base);
+
     if (!rsp_breakpoint(fd, true, addr_a)) {
         logf1("Could not set breakpoint A; refusing to start trace.\n");
         (void)rsp_detach(fd, pid);
@@ -590,6 +657,7 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
         }
         logf1("Route hit: %s at PC 0x%" PRIx64 " (A=%u, B=%u)\n",
               hit_site == addr_a ? "A" : "B", pc, hits_a, hits_b);
+        dump_hit_registers(fd, hit_site == addr_a ? "A" : "B", pc);
         save_log();
 
         /* Remove the trap; normalise PC to the original instruction if the stub
