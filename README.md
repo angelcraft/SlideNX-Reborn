@@ -12,6 +12,7 @@ SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmod
 - Choose any MP3 in sd:/SlideNX/sounds/ for connect and disconnect sounds.
 - Keep original filenames; no renaming to IN.mp3 or OUT.mp3.
 - Persist chosen filenames and gain to sd:/SlideNX/settings.ini.
+- Reset trim and fade settings when a different MP3 is selected, preventing an old trim endpoint from truncating the newly selected sound.
 - Preview up to 8 seconds of the selected connect or disconnect sound on the Switch, using the same normalization approach as conversion.
 - Queued double-buffer preview playback to reduce gaps/underruns while a preview is running.
 - Adjust conversion gain from -12 dB to +6 dB in 1 dB steps.
