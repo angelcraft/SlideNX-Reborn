@@ -36,7 +36,7 @@
 #define MAX_FILES 96
 #define PICKER_ROWS 14
 
-typedef enum { UI_MAIN, UI_PICK_CONNECT, UI_PICK_DISCONNECT } UiMode;
+typedef enum { UI_MAIN, UI_PICK_CONNECT, UI_PICK_DISCONNECT, UI_AUDIO_LAB } UiMode;
 static bool g_sd_ready;
 static bool g_ui_graphical;
 static bool g_outputs_ready;
@@ -49,6 +49,11 @@ static char g_sound_files[MAX_FILES][NAME_MAX_NX];
 static char g_connect[NAME_MAX_NX] = "";
 static char g_disconnect[NAME_MAX_NX] = "";
 static char g_status[256] = "Place MP3 files in sdmc:/SlideNX/sounds/.";
+static AudioTrimOptions g_connect_trim = {0};
+static AudioTrimOptions g_disconnect_trim = {0};
+static AudioLabInfo g_audio_lab_info;
+static bool g_audio_lab_connect = true;
+static int g_audio_lab_row = 0;
 
 static void copy_name(char *destination, size_t destination_size, const char *source)
 {
@@ -214,8 +219,17 @@ static bool save_settings(void)
     if (!ensure_app_dirs()) return false;
     fp = fopen(SETTINGS_TMP, "w");
     if (!fp) return false;
-    if (fprintf(fp, "connect=%s\ndisconnect=%s\ngain_db=%d\n",
-                g_connect, g_disconnect, g_gain_db) < 0) {
+    if (fprintf(fp,
+                "connect=%s\ndisconnect=%s\ngain_db=%d\n"
+                "connect_trim_start_ms=%u\nconnect_trim_end_ms=%u\n"
+                "connect_fade_in_ms=%u\nconnect_fade_out_ms=%u\n"
+                "disconnect_trim_start_ms=%u\ndisconnect_trim_end_ms=%u\n"
+                "disconnect_fade_in_ms=%u\ndisconnect_fade_out_ms=%u\n",
+                g_connect, g_disconnect, g_gain_db,
+                g_connect_trim.trim_start_ms, g_connect_trim.trim_end_ms,
+                g_connect_trim.fade_in_ms, g_connect_trim.fade_out_ms,
+                g_disconnect_trim.trim_start_ms, g_disconnect_trim.trim_end_ms,
+                g_disconnect_trim.fade_in_ms, g_disconnect_trim.fade_out_ms) < 0) {
         fclose(fp); (void)remove_if_exists(SETTINGS_TMP); return false;
     }
     if (fclose(fp) != 0) { (void)remove_if_exists(SETTINGS_TMP); return false; }
@@ -225,11 +239,24 @@ static bool save_settings(void)
     return true;
 }
 
+static uint32_t parse_ms_setting(const char *value, uint32_t maximum)
+{
+    char *end = NULL;
+    unsigned long parsed;
+    if (!value || !*value) return 0;
+    errno = 0;
+    parsed = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0') return 0;
+    if (parsed > maximum) parsed = maximum;
+    return (uint32_t)parsed;
+}
+
 static void load_settings(void)
 {
     FILE *fp = fopen(SETTINGS, "r");
     char line[384], connect[NAME_MAX_NX] = "", disconnect[NAME_MAX_NX] = "";
     int gain = 0;
+    AudioTrimOptions connect_trim = {0}, disconnect_trim = {0};
     if (fp) {
         while (fgets(line, sizeof(line), fp)) {
             char *eq = strchr(line, '='), *key, *value;
@@ -247,11 +274,32 @@ static void load_settings(void)
             else if (!strcasecmp(key, "gain_db")) {
                 char *end = NULL; long v = strtol(value, &end, 10);
                 if (end != value && *end == '\0' && v >= -12 && v <= 6) gain = (int)v;
-            }
+            } else if (!strcasecmp(key, "connect_trim_start_ms"))
+                connect_trim.trim_start_ms = parse_ms_setting(value, 120000U);
+            else if (!strcasecmp(key, "connect_trim_end_ms"))
+                connect_trim.trim_end_ms = parse_ms_setting(value, 120000U);
+            else if (!strcasecmp(key, "connect_fade_in_ms"))
+                connect_trim.fade_in_ms = parse_ms_setting(value, 10000U);
+            else if (!strcasecmp(key, "connect_fade_out_ms"))
+                connect_trim.fade_out_ms = parse_ms_setting(value, 10000U);
+            else if (!strcasecmp(key, "disconnect_trim_start_ms"))
+                disconnect_trim.trim_start_ms = parse_ms_setting(value, 120000U);
+            else if (!strcasecmp(key, "disconnect_trim_end_ms"))
+                disconnect_trim.trim_end_ms = parse_ms_setting(value, 120000U);
+            else if (!strcasecmp(key, "disconnect_fade_in_ms"))
+                disconnect_trim.fade_in_ms = parse_ms_setting(value, 10000U);
+            else if (!strcasecmp(key, "disconnect_fade_out_ms"))
+                disconnect_trim.fade_out_ms = parse_ms_setting(value, 10000U);
         }
         fclose(fp);
     }
     g_gain_db = gain;
+    g_connect_trim = connect_trim;
+    g_disconnect_trim = disconnect_trim;
+    if (g_connect_trim.trim_end_ms && g_connect_trim.trim_end_ms <= g_connect_trim.trim_start_ms)
+        g_connect_trim.trim_start_ms = g_connect_trim.trim_end_ms = 0;
+    if (g_disconnect_trim.trim_end_ms && g_disconnect_trim.trim_end_ms <= g_disconnect_trim.trim_start_ms)
+        g_disconnect_trim.trim_start_ms = g_disconnect_trim.trim_end_ms = 0;
     if (chosen_file_exists(connect)) copy_name(g_connect, sizeof(g_connect), connect);
     else if (g_sound_count) copy_name(g_connect, sizeof(g_connect), g_sound_files[0]);
     else g_connect[0] = '\0';
@@ -320,12 +368,12 @@ static void convert_both(void)
     if (!ensure_app_dirs()) { snprintf(g_status, sizeof(g_status), "Could not create output folder."); return; }
     (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT);
 
-    if (convert_mp3_to_raw(in_path, TMP_IN, g_gain_db, error, sizeof(error)) != 0) {
+    if (convert_mp3_to_raw(in_path, TMP_IN, g_gain_db, &g_connect_trim, error, sizeof(error)) != 0) {
         snprintf(g_status, sizeof(g_status), "Connect conversion failed: %.170s", error);
         (void)remove_if_exists(TMP_IN); return;
     }
     error[0] = '\0';
-    if (convert_mp3_to_raw(out_path, TMP_OUT, g_gain_db, error, sizeof(error)) != 0) {
+    if (convert_mp3_to_raw(out_path, TMP_OUT, g_gain_db, &g_disconnect_trim, error, sizeof(error)) != 0) {
         snprintf(g_status, sizeof(g_status), "Disconnect conversion failed: %.160s", error);
         (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT); return;
     }
@@ -356,7 +404,7 @@ static void preview_selected(bool connecting)
     }
 
     snprintf(g_status, sizeof(g_status), "Playing an 8-second preview of %.140s.", name);
-    if (preview_mp3(path, g_gain_db, error, sizeof(error)) == 0) {
+    if (preview_mp3_trimmed(path, g_gain_db, connecting ? &g_connect_trim : &g_disconnect_trim, error, sizeof(error)) == 0) {
         snprintf(g_status, sizeof(g_status), "Preview finished: %.170s", name);
     } else {
         snprintf(g_status, sizeof(g_status), "Preview failed: %.180s", error);
