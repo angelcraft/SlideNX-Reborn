@@ -710,7 +710,7 @@ static void draw_main(void)
     const char *items[] = {"Choose connect sound", "Choose disconnect sound",
         "Preview connect sound", "Preview disconnect sound", "Conversion gain",
         "Convert selected sounds", "Install to LayeredFS", "Restore previous sounds",
-        "Refresh MP3 list", "Exit"};
+        "Refresh MP3 list", "Audio Lab / trim", "Exit"};
     char gain_text[48];
     snprintf(gain_text, sizeof(gain_text), "Conversion gain: %s%d dB",
              g_gain_db > 0 ? "+" : "", g_gain_db);
@@ -750,11 +750,34 @@ int main(void)
         if (down & HidNpadButton_Plus) {
             if (g_ui_mode != UI_MAIN) {
                 g_ui_mode = UI_MAIN;
-                snprintf(g_status, sizeof(g_status), "Picker cancelled.");
+                snprintf(g_status, sizeof(g_status), "Editor/picker closed.");
             } else break;
         }
 
-        if (g_ui_mode != UI_MAIN) {
+        if (g_ui_mode == UI_AUDIO_LAB) {
+            if (down & HidNpadButton_B) {
+                g_ui_mode = UI_MAIN;
+                snprintf(g_status, sizeof(g_status), "Audio Lab closed.");
+            } else if (down & HidNpadButton_L) {
+                change_audio_lab_source(false);
+            } else if (down & HidNpadButton_R) {
+                change_audio_lab_source(true);
+            } else if (down & HidNpadButton_Up) {
+                if (g_audio_lab_row > 0) g_audio_lab_row--;
+            } else if (down & HidNpadButton_Down) {
+                if (g_audio_lab_row < 3) g_audio_lab_row++;
+            } else if (down & HidNpadButton_Left) {
+                adjust_audio_lab(-1);
+            } else if (down & HidNpadButton_Right) {
+                adjust_audio_lab(1);
+            } else if (down & HidNpadButton_X) {
+                reset_audio_lab();
+            } else if (down & HidNpadButton_A) {
+                preview_selected(g_audio_lab_connect);
+            }
+            if (g_ui_mode == UI_AUDIO_LAB) draw_audio_lab();
+            else draw_main();
+        } else if (g_ui_mode == UI_PICK_CONNECT || g_ui_mode == UI_PICK_DISCONNECT) {
             if (down & HidNpadButton_B) {
                 g_ui_mode = UI_MAIN;
                 snprintf(g_status, sizeof(g_status), "Picker cancelled.");
@@ -762,12 +785,15 @@ int main(void)
                 if (g_picker_cursor > 0) g_picker_cursor--;
             } else if (down & HidNpadButton_Down) {
                 if ((size_t)(g_picker_cursor + 1) < g_sound_count) g_picker_cursor++;
-            } else if (down & HidNpadButton_A) accept_picker();
+            } else if (down & HidNpadButton_A) {
+                accept_picker();
+                if (g_ui_mode == UI_MAIN) draw_main();
+            }
             if (g_ui_mode != UI_MAIN) draw_picker();
             else draw_main();
         } else {
             if (down & HidNpadButton_Up) { if (g_menu_cursor > 0) g_menu_cursor--; }
-            if (down & HidNpadButton_Down) { if (g_menu_cursor < 9) g_menu_cursor++; }
+            if (down & HidNpadButton_Down) { if (g_menu_cursor < 10) g_menu_cursor++; }
             if (g_menu_cursor == 4 && (down & HidNpadButton_Left)) adjust_gain(-1);
             if (g_menu_cursor == 4 && (down & HidNpadButton_Right)) adjust_gain(1);
 
@@ -786,7 +812,8 @@ int main(void)
                     case 6: install_both(); break;
                     case 7: restore_baseline(); break;
                     case 8: refresh_all(); break;
-                    case 9:
+                    case 9: open_audio_lab(); break;
+                    case 10:
                         if (g_ui_graphical) gui_exit(); else consoleExit(NULL);
                         return 0;
                 }
