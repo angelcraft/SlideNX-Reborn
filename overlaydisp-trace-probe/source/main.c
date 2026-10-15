@@ -347,21 +347,56 @@ static bool rsp_read_memory(int fd, uint64_t address, size_t length, char *hex, 
     return true;
 }
 
+static void dump_code_region(int fd, uint64_t address, size_t length, const char *label)
+{
+    char hex[0x202];
+    if (length == 0 || length > 0x100 || sizeof(hex) < length * 2 + 1) {
+        logf1("Skipping oversized code dump '%s' (length=0x%zx).\n", label, length);
+        return;
+    }
+    logf1("\n--- %s ---\nAddress=0x%" PRIx64 ", length=0x%zx\n", label, address, length);
+    if (rsp_read_memory(fd, address, length, hex, sizeof(hex))) {
+        logf1("Bytes (AArch64 little-endian):\n%s\n", hex);
+    } else {
+        logf1("Read failed for '%s'.\n", label);
+    }
+}
+
 static void dump_candidate_code(int fd, uint64_t module_base)
 {
-    /* This is read before breakpoints are installed, so the dump contains
-       original instruction bytes, not debugger trap instructions. */
-    const uint64_t start = module_base + SITE_A - 0x20;
-    const size_t length = 0x80; /* Covers A, B and surrounding instructions. */
-    char hex[(0x80 * 2) + 1];
-    logf1("\n--- read-only candidate instruction bytes ---\n");
-    logf1("Architecture: AArch64, little-endian; dump address=0x%" PRIx64 ", length=0x%zx\n",
-          start, length);
-    if (rsp_read_memory(fd, start, length, hex, sizeof(hex))) {
-        logf1("Code bytes (hex, address +0x0 is first byte):\n%s\n", hex);
-    } else {
-        logf1("Could not read candidate instruction bytes; continuing only if user chooses to trace.\n");
+    /* Read-only, before breakpoints are installed. */
+    dump_code_region(fd, module_base + SITE_A - 0x20, 0x80,
+                     "candidate callsites A/B");
+    /* Both BL encodings in the first dump resolve to module + 0x356710.
+       Read the callee body so we can identify its behavior offline. */
+    dump_code_region(fd, module_base + 0x356710, 0x100,
+                     "shared call target module+0x356710");
+}
+
+static void dump_x1_pointed_memory(int fd)
+{
+    char reply[PKT + 1], hex[0x81];
+    uint64_t address = 0;
+    if (!command(fd, "p1", reply, sizeof(reply)) || !parse_le_u64(reply, &address)) {
+        logf1("  x1 pointed data: unable to read pointer register.\n");
+        return;
     }
+    logf1("  x1 pointed data at 0x%" PRIx64 " (64 bytes):\n", address);
+    if (!rsp_read_memory(fd, address, 64, hex, sizeof(hex))) {
+        logf1("    <memory not readable>\n");
+        return;
+    }
+    logf1("    hex=%s\n", hex);
+    char ascii[65];
+    for (unsigned i = 0; i < 64; ++i) {
+        char pair[3] = {hex[i * 2], hex[i * 2 + 1], 0};
+        char *end = NULL;
+        long v = strtol(pair, &end, 16);
+        if (!end || *end || end == pair) { ascii[i] = '?'; continue; }
+        ascii[i] = (v >= 0x20 && v <= 0x7e) ? (char)v : '.';
+    }
+    ascii[64] = '\0';
+    logf1("    ascii=%s\n", ascii);
 }
 
 static void dump_hit_registers(int fd, const char *site, uint64_t pc)
@@ -388,6 +423,7 @@ static void dump_hit_registers(int fd, const char *site, uint64_t pc)
             logf1("  %s=<unavailable: %.40s>\n", extra[i].name, reply);
         }
     }
+    dump_x1_pointed_memory(fd);
     save_log();
 }
 
