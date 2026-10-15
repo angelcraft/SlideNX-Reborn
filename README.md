@@ -14,6 +14,8 @@ SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmod
 - Cap automatic boost at +18 dB; manual gain remains available, but the peak ceiling takes priority.
 - Convert to headerless signed PCM 16-bit little-endian, mono, 48 kHz.
 - Convert and install remain separate actions.
+- Refuse to install stale or mismatched RAW outputs: a saved conversion signature must match both selected MP3s, gain, trims/fades, and output file metadata.
+- Stage previous output files and attempt rollback if replacing the pair fails.
 - Restore the LayeredFS baseline saved before first installation.
 - If sounds/ is empty, migrate legacy root IN.mp3 and OUT.mp3 into sounds/.
 
@@ -51,8 +53,8 @@ Converted output: sd:/SlideNX/output/joint.raw and joint_out.raw.
 LayeredFS target: sd:/atmosphere/contents/010000000000100C/romfs/sound/.
 
 ## Notes
-The 2.6 preview path uses two aligned audio buffers and queues the next block while the current one is playing, reducing the chance of preview dropouts. Actual improvement must still be confirmed on hardware; conversion output is intentionally kept separate from preview playback.
+After updating from an older version, convert both sounds once so SlideNX can create the validation metadata. The 2.6 preview path uses two aligned audio buffers and queues the next block while the current one is playing, reducing the chance of preview dropouts. Actual improvement must still be confirmed on hardware; conversion output is intentionally kept separate from preview playback.
 
-MP3 files are limited to 16 MiB and 120 seconds, and must use a constant sample rate. Each MP3 is normalized separately: active-sample RMS targets -18 dBFS, sample peaks are capped at -3 dBFS, and automatic boost is limited to +18 dB. This is an RMS-based estimate rather than LUFS metering. Manual gain is applied afterward, but the peak ceiling takes priority. Normalization reduces output-level clipping risk; it cannot repair distortion already present in the source MP3. The UI includes a controller-driven SDL2 graphical interface plus a text fallback. A successful build does not replace testing on the Switch OLED. A successful build does not replace testing on the Switch OLED. Keep sd:/SlideNX/backup/ until restore has been verified.
+MP3 files are limited to 16 MiB and 120 seconds, and must use a constant sample rate. Each MP3 is normalized separately: active-sample RMS targets -18 dBFS, sample peaks are capped at -3 dBFS, and automatic boost is limited to +18 dB. This is an RMS-based estimate rather than LUFS metering. Manual gain is applied afterward, but the peak ceiling takes priority. Normalization reduces output-level clipping risk; it cannot repair distortion already present in the source MP3. The UI includes a controller-driven SDL2 graphical interface plus a text fallback. A successful build does not replace testing on the Switch OLED. Keep sd:/SlideNX/backup/ until restore has been verified.
 
 Based on SlideNX-Reborn and upstream SlideNX by jonyluke. See LICENSE for GPL v2. Vendored minimp3 notices remain in include/minimp3.h.
