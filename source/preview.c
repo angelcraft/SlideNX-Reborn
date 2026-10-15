@@ -92,23 +92,12 @@ static int preview_buffer_slot(AudioOutBuffer *buffer, AudioOutBuffer buffers[2]
 }
 
 static bool queue_preview_buffer(AudioOutBuffer buffers[2], int slot,
-                                 bool pending[2], size_t *pending_count,
-                                 AudioOutBuffer **released)
+                                 bool pending[2], size_t *pending_count)
 {
-    AudioOutBuffer *returned = NULL;
-    int returned_slot;
-    if (R_FAILED(audoutPlayBuffer(&buffers[slot], &returned))) return false;
-
+    if (pending[slot] || R_FAILED(audoutAppendAudioOutBuffer(&buffers[slot])))
+        return false;
     pending[slot] = true;
     (*pending_count)++;
-    if (returned) {
-        returned_slot = preview_buffer_slot(returned, buffers);
-        if (returned_slot >= 0 && pending[returned_slot]) {
-            pending[returned_slot] = false;
-            (*pending_count)--;
-        }
-    }
-    *released = returned;
     return true;
 }
 
@@ -256,7 +245,7 @@ int preview_mp3_trimmed(const char *input_path, int gain_db,
             buffers[next_slot].data_size = frames * 2U * sizeof(int16_t);
             buffers[next_slot].data_offset = 0;
             if (!frames || !queue_preview_buffer(buffers, next_slot, pending,
-                                                  &pending_count, &released)) {
+                                                  &pending_count)) {
                 set_error(error_text, error_text_size, "Audio output rejected a preview buffer.");
                 goto cleanup;
             }
@@ -264,7 +253,7 @@ int preview_mp3_trimmed(const char *input_path, int gain_db,
             next_slot ^= 1;
         }
 
-        while (next_base < total_frames || pending_count > 0U || released != NULL) {
+        while (next_base < total_frames || pending_count > 0U) {
             int slot;
             if (!released) wait_for_buffer(&released);
             slot = preview_buffer_slot(released, buffers);
@@ -287,7 +276,7 @@ int preview_mp3_trimmed(const char *input_path, int gain_db,
                 buffers[slot].data_size = frames * 2U * sizeof(int16_t);
                 buffers[slot].data_offset = 0;
                 if (!frames || !queue_preview_buffer(buffers, slot, pending,
-                                                      &pending_count, &released)) {
+                                                      &pending_count)) {
                     set_error(error_text, error_text_size, "Audio output rejected a preview buffer.");
                     goto cleanup;
                 }
