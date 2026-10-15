@@ -265,11 +265,35 @@ int preview_mp3_trimmed(const char *input_path, int gain_db,
                 continue;
             }
             if (released_count > 1U) {
-                /* Both queued blocks may have completed while the app was busy. */
+                /* Both blocks completed: refill both, preserving playback order. */
                 pending[0] = false;
                 pending[1] = false;
                 pending_count = 0;
-            } else if (pending[slot]) {
+                released = NULL;
+
+                for (int refill_index = 0;
+                     refill_index < 2 && next_base < total_frames;
+                     ++refill_index) {
+                    int refill_slot = refill_index == 0 ? slot : (slot ^ 1);
+                    size_t frames = fill_preview_samples(pcm_buffers[refill_slot],
+                                                          mono, mono_count, next_base,
+                                                          total_frames, source_rate, gain,
+                                                          trim, reached_preview_limit);
+                    buffers[refill_slot].buffer = pcm_buffers[refill_slot];
+                    buffers[refill_slot].buffer_size = PCM_BUFFER_BYTES;
+                    buffers[refill_slot].data_size = frames * 2U * sizeof(int16_t);
+                    buffers[refill_slot].data_offset = 0;
+                    if (!frames || !queue_preview_buffer(buffers, refill_slot,
+                                                          pending, &pending_count)) {
+                        set_error(error_text, error_text_size,
+                                  "Audio output rejected a refilled preview buffer.");
+                        goto cleanup;
+                    }
+                    next_base += frames;
+                }
+                continue;
+            }
+            if (pending[slot]) {
                 pending[slot] = false;
                 pending_count--;
             }
