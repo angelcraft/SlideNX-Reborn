@@ -719,7 +719,18 @@ static void preview_selected(bool connecting)
 static bool baseline(const char *target, const char *backup, const char *state)
 {
     FILE *fp = fopen(state, "r");
-    if (fp) { fclose(fp); return !exists(target) || regular_nonempty(target); }
+    if (fp) {
+        char value[24] = "";
+        bool read_ok = fgets(value, sizeof(value), fp) != NULL;
+        bool close_ok = fclose(fp) == 0;
+        if (!read_ok || !close_ok) return false;
+        if (!strncmp(value, "present", 7))
+            return regular_nonempty(backup) && (!exists(target) || regular_nonempty(target));
+        if (!strncmp(value, "missing", 7))
+            return !exists(target) || regular_nonempty(target);
+        snprintf(g_status, sizeof(g_status), "Baseline state is invalid: %.150s", state);
+        return false;
+    }
     if (exists(target) && !regular_nonempty(target)) {
         snprintf(g_status, sizeof(g_status), "Refusing to replace non-file target: %.170s", target);
         return false;
@@ -729,11 +740,21 @@ static bool baseline(const char *target, const char *backup, const char *state)
             snprintf(g_status, sizeof(g_status), "Could not back up target: %.170s", target);
             return false;
         }
-        fp = fopen(state, "w"); if (!fp) return false;
-        fputs("present\n", fp); return fclose(fp) == 0;
+        fp = fopen(state, "w");
+        if (!fp) return false;
+        if (fputs("present\n", fp) < 0 || fclose(fp) != 0) {
+            (void)remove_if_exists(state);
+            return false;
+        }
+        return true;
     }
-    fp = fopen(state, "w"); if (!fp) return false;
-    fputs("missing\n", fp); return fclose(fp) == 0;
+    fp = fopen(state, "w");
+    if (!fp) return false;
+    if (fputs("missing\n", fp) < 0 || fclose(fp) != 0) {
+        (void)remove_if_exists(state);
+        return false;
+    }
+    return true;
 }
 
 static bool read_state(const char *path, char *value, size_t size)
@@ -778,8 +799,11 @@ static void install_both(void)
     const char *prev_out = TARGET_OUT ".slidenx-prev";
     bool old_in, old_out;
 
-    if (!g_outputs_ready || !regular_nonempty(RAW_IN) || !regular_nonempty(RAW_OUT)) {
-        snprintf(g_status, sizeof(g_status), "Convert both selected MP3s before installing."); return;
+    if (!g_outputs_ready || !conversion_metadata_matches() ||
+        !regular_nonempty(RAW_IN) || !regular_nonempty(RAW_OUT)) {
+        g_outputs_ready = false;
+        snprintf(g_status, sizeof(g_status), "Outputs are stale or unverified. Convert both sounds before installing.");
+        return;
     }
     if (!ensure_app_dirs() || !ensure_target_dir()) {
         snprintf(g_status, sizeof(g_status), "Could not create LayeredFS folders."); return;
