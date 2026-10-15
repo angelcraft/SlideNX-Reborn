@@ -14,6 +14,13 @@
 11. Install converted RAWs, verify both target files exist, then use restore and verify the original backup is restored.
 12. Verify settings backup recovery and stale-output validation when source or conversion settings change.
 
+## Source-specific trim regression
+1. In Audio Lab, set the disconnect trim end to an early time (for example 1,000 ms) and save.
+2. Return to the main menu and choose a different disconnect MP3.
+3. Confirm status says trim/fades were reset to the full file.
+4. Convert both sounds; verify the new disconnect RAW duration matches the newly selected MP3 duration (unless a new trim is explicitly set).
+5. Re-open Audio Lab and verify trim end is AUTO / EOF and fade values are zero for the newly selected file.
+
 ## Restart action
 13. Navigate to **Restart Switch** and press A; verify the confirmation screen clearly warns that the console will reboot.
 14. Press B on the confirmation screen; confirm SlideNX returns to the menu without restarting.
