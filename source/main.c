@@ -42,7 +42,7 @@
 #define MAX_FILES 96
 #define PICKER_ROWS 14
 
-typedef enum { UI_MAIN, UI_PICK_CONNECT, UI_PICK_DISCONNECT, UI_AUDIO_LAB } UiMode;
+typedef enum { UI_MAIN, UI_PICK_CONNECT, UI_PICK_DISCONNECT, UI_AUDIO_LAB, UI_CONFIRM_REBOOT } UiMode;
 static bool g_sd_ready;
 static bool g_ui_graphical;
 static bool g_outputs_ready;
@@ -925,13 +925,13 @@ static void draw_main(void)
     const char *items[] = {"Choose connect sound", "Choose disconnect sound",
         "Preview connect sound", "Preview disconnect sound", "Conversion gain",
         "Convert selected sounds", "Install to LayeredFS", "Restore previous sounds",
-        "Refresh MP3 list", "Audio Lab / trim", "Exit"};
+        "Refresh MP3 list", "Audio Lab / trim", "Restart Switch", "Exit"};
     char gain_text[48];
     snprintf(gain_text, sizeof(gain_text), "Conversion gain: %s%d dB",
              g_gain_db > 0 ? "+" : "", g_gain_db);
 
     consoleClear();
-    printf("SlideNX Reborn 2.6 - Sound Studio\n");
+    printf("SlideNX Reborn 2.7 - Sound Studio\n");
     printf("=================================\n\n");
     printf("CONNECT:    %s\n", g_connect[0] ? g_connect : "(not selected)");
     printf("DISCONNECT: %s\n\n", g_disconnect[0] ? g_disconnect : "(not selected)");
@@ -939,11 +939,27 @@ static void draw_main(void)
     printf("Output RAW: sdmc:/SlideNX/output/\n");
     printf("Format: mono PCM 16-bit LE, 48000 Hz, headerless\n");
     printf("Auto level: RMS target -18 dBFS; peak ceiling -3 dBFS\n\n");
-    for (int i = 0; i < 10; i++)
+    for (int i = 0; i < 12; i++)
         printf("%c %s\n", i == g_menu_cursor ? '>' : ' ', i == 4 ? gain_text : items[i]);
     printf("\nStatus: %s\n\n", g_status);
     printf("UP/DOWN: Navigate   A: Select   LEFT/RIGHT: Gain +/-1 dB on gain row\n");
     printf("Y: Install   X: Restore   B: Refresh list   PLUS: Exit\n");
+    consoleUpdate(NULL);
+}
+
+static void draw_reboot_confirm(void)
+{
+    if (g_ui_graphical) {
+        gui_draw_reboot_confirm();
+        return;
+    }
+    consoleClear();
+    printf("SLIDENX REBORN 2.7 - RESTART CONSOLE\n");
+    printf("====================================\n\n");
+    printf("This will reboot the Nintendo Switch.\n");
+    printf("Save any work before continuing.\n\n");
+    printf("A: Restart now\n");
+    printf("B / PLUS: Cancel and return to SlideNX\n");
     consoleUpdate(NULL);
 }
 
@@ -964,12 +980,29 @@ int main(void)
 
         if (down & HidNpadButton_Plus) {
             if (g_ui_mode != UI_MAIN) {
+                bool cancelling_reboot = g_ui_mode == UI_CONFIRM_REBOOT;
                 g_ui_mode = UI_MAIN;
-                snprintf(g_status, sizeof(g_status), "Editor/picker closed.");
+                snprintf(g_status, sizeof(g_status), "%s",
+                         cancelling_reboot ? "Restart cancelled." : "Editor/picker closed.");
             } else break;
         }
 
-        if (g_ui_mode == UI_AUDIO_LAB) {
+        if (g_ui_mode == UI_CONFIRM_REBOOT) {
+            if (down & HidNpadButton_B) {
+                g_ui_mode = UI_MAIN;
+                snprintf(g_status, sizeof(g_status), "Restart cancelled.");
+            } else if (down & HidNpadButton_A) {
+                Result reboot_rc = appletRequestToReboot();
+                if (R_FAILED(reboot_rc)) {
+                    snprintf(g_status, sizeof(g_status),
+                             "Reboot request failed: 0x%08x. Try launching with title override.",
+                             (unsigned)reboot_rc);
+                    g_ui_mode = UI_MAIN;
+                }
+            }
+            if (g_ui_mode == UI_CONFIRM_REBOOT) draw_reboot_confirm();
+            else draw_main();
+        } else if (g_ui_mode == UI_AUDIO_LAB) {
             if (down & HidNpadButton_B) {
                 g_ui_mode = UI_MAIN;
                 snprintf(g_status, sizeof(g_status), "Audio Lab closed.");
@@ -1008,7 +1041,7 @@ int main(void)
             else draw_main();
         } else {
             if (down & HidNpadButton_Up) { if (g_menu_cursor > 0) g_menu_cursor--; }
-            if (down & HidNpadButton_Down) { if (g_menu_cursor < 10) g_menu_cursor++; }
+            if (down & HidNpadButton_Down) { if (g_menu_cursor < 11) g_menu_cursor++; }
             if (g_menu_cursor == 4 && (down & HidNpadButton_Left)) adjust_gain(-1);
             if (g_menu_cursor == 4 && (down & HidNpadButton_Right)) adjust_gain(1);
 
@@ -1016,8 +1049,15 @@ int main(void)
             if (down & HidNpadButton_X) { if (g_sd_ready) restore_baseline(); }
             if (down & HidNpadButton_Y) { if (g_sd_ready) install_both(); }
             if (down & HidNpadButton_A) {
-                if (!g_sd_ready) snprintf(g_status, sizeof(g_status), "SD card unavailable.");
-                else switch (g_menu_cursor) {
+                if (g_menu_cursor == 10) {
+                    g_ui_mode = UI_CONFIRM_REBOOT;
+                    snprintf(g_status, sizeof(g_status), "Confirm restart to apply installed changes.");
+                } else if (g_menu_cursor == 11) {
+                    if (g_ui_graphical) gui_exit(); else consoleExit(NULL);
+                    return 0;
+                } else if (!g_sd_ready) {
+                    snprintf(g_status, sizeof(g_status), "SD card unavailable.");
+                } else switch (g_menu_cursor) {
                     case 0: open_picker(true); break;
                     case 1: open_picker(false); break;
                     case 2: preview_selected(true); break;
@@ -1028,9 +1068,6 @@ int main(void)
                     case 7: restore_baseline(); break;
                     case 8: refresh_all(); break;
                     case 9: open_audio_lab(); break;
-                    case 10:
-                        if (g_ui_graphical) gui_exit(); else consoleExit(NULL);
-                        return 0;
                 }
             }
             if (g_ui_mode == UI_MAIN) draw_main();
