@@ -840,10 +840,10 @@ static unsigned long find_pid(const char *xml)
 static void draw_ui(void)
 {
     consoleClear();
-    printf("OVERLAYDISP TRACE PROBE\n=======================\n\n");
-    printf("Temporary runtime trace of SeJointOut routes.\n\n");
+    printf("OVERLAYDISP REFERENCE SCAN v9\n=============================\n\n");
+    printf("Read-only xref scan; no software breakpoints.\n\n");
     printf("Status: %s\n\n", status_line);
-    printf("A: start trace (then disconnect Joy-Cons)\nPLUS: exit\n\n");
+    printf("A: start read-only scan\nPLUS: exit\n\n");
     printf("Report: %s\n", REPORT);
     consoleUpdate(NULL);
 }
