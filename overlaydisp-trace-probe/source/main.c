@@ -1,4 +1,5 @@
 #include <switch.h>
+#include <inttypes.h>
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -417,12 +418,6 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
         }
     }
 
-    /* Ask the stub to stop the target if it was still running. */
-    const char interrupt = 3;
-    (void)send(fd, &interrupt, 1, 0);
-    set_socket_timeout_ms(fd, 2500);
-    (void)read_packet(fd, reply, sizeof(reply));
-    set_socket_timeout_ms(fd, 3000);
     (void)rsp_breakpoint(fd, false, addr_a);
     (void)rsp_breakpoint(fd, false, addr_b);
     (void)rsp_detach(fd, pid);
@@ -543,7 +538,7 @@ static void run_probe(PadState *pad)
 
     (void)snprintf(status_line, sizeof(status_line), "Attaching to overlayDisp PID %lu...", pid);
     draw_ui();
-    (void)snprintf(reply, sizeof(reply), "");
+    reply[0] = '\0';
     char q[64];
     (void)snprintf(q, sizeof(q), "vAttach;%lx", pid);
     if (!command(fd, q, reply, sizeof(reply)) ||
