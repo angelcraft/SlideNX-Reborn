@@ -236,7 +236,7 @@ static void frame_end(void)
 
 static void draw_header(const char *title, const char *subtitle)
 {
-    text_draw("SLIDENX REBORN 2.6", 34, 22, 3, C_TEXT, 36);
+    text_draw("SLIDENX REBORN 2.7", 34, 22, 3, C_TEXT, 36);
     text_draw(title, 35, 64, 2, C_ACCENT, 36);
     draw_truncated(subtitle, 800, 55, 2, C_MUTED, 440);
     line(30, 94, 1250, 94, C_BORDER);
@@ -263,7 +263,7 @@ void gui_draw_main(int selected, const char *connect_name, const char *disconnec
         "PREVIEW CONNECT SOUND", "PREVIEW DISCONNECT",
         "CONVERSION GAIN", "CONVERT SELECTED SOUNDS",
         "INSTALL TO LAYEREDFS", "RESTORE PREVIOUS SOUNDS",
-        "REFRESH MP3 LIST", "AUDIO LAB / TRIM", "EXIT SLIDENX"
+        "REFRESH MP3 LIST", "AUDIO LAB / TRIM", "RESTART SWITCH", "EXIT SLIDENX"
     };
 
     frame_begin();
@@ -273,8 +273,8 @@ void gui_draw_main(int selected, const char *connect_name, const char *disconnec
     text_draw("MENU", 48, 130, 2, C_MUTED, 20);
     line(46, 153, 386, 153, C_BORDER);
 
-    for (int i = 0; i < 11; ++i) {
-        int y = 164 + i * 44;
+    for (int i = 0; i < 12; ++i) {
+        int y = 164 + i * 41;
         bool active = (i == selected);
         if (active) {
             fill_rect(40, y, 352, 39, C_PANEL_HI);
@@ -310,6 +310,27 @@ void gui_draw_main(int selected, const char *connect_name, const char *disconnec
     text_draw("A  SELECT   Y  INSTALL   X  RESTORE", 448, 599, 2, C_TEXT, 42);
     text_draw("B  REFRESH   PLUS  EXIT", 448, 632, 2, C_MUTED, 35);
 
+    frame_end();
+}
+
+void gui_draw_reboot_confirm(void)
+{
+    frame_begin();
+    draw_header("RESTART SWITCH", "APPLY INSTALLED AUDIO CHANGES");
+
+    panel(130, 140, 1020, 500, C_SIDEBAR, C_BORDER);
+    panel(180, 184, 920, 102, C_PANEL, C_RED);
+    text_draw("RESTART THE CONSOLE?", 222, 219, 3, C_RED, 32);
+
+    text_draw("THIS WILL REBOOT THE NINTENDO SWITCH.", 222, 328, 2, C_TEXT, 43);
+    text_draw("SAVE ANY WORK BEFORE CONTINUING.", 222, 368, 2, C_MUTED, 40);
+
+    panel(245, 456, 340, 72, C_PANEL, C_RED);
+    text_draw("A  RESTART NOW", 276, 482, 2, C_RED, 20);
+    panel(695, 456, 340, 72, C_PANEL, C_BORDER);
+    text_draw("B  CANCEL", 752, 482, 2, C_TEXT, 16);
+
+    text_draw("B OR PLUS RETURNS WITHOUT RESTARTING", 290, 574, 2, C_MUTED, 42);
     frame_end();
 }
 
