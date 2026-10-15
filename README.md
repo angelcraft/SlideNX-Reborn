@@ -16,6 +16,8 @@ SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmod
 - Convert and install remain separate actions.
 - Refuse to install stale or mismatched RAW outputs: a saved conversion signature must match both selected MP3s, gain, trims/fades, and output file metadata.
 - Stage previous output files and attempt rollback if replacing the pair fails.
+- Protect settings writes with a recoverable backup (`settings.ini.bak`) if an update is interrupted.
+- Verify the original LayeredFS backup still exists before allowing reinstall.
 - Restore the LayeredFS baseline saved before first installation.
 - If sounds/ is empty, migrate legacy root IN.mp3 and OUT.mp3 into sounds/.
 
