@@ -272,6 +272,51 @@ static bool read_pc_from_stop(const char *reply, uint64_t *pc)
     return true;
 }
 
+static bool parse_le_u64(const char *hex, uint64_t *value)
+{
+    if (strlen(hex) < 16) return false;
+    uint64_t out = 0;
+    for (unsigned i = 0; i < 8; ++i) {
+        char pair[3] = {hex[i * 2], hex[i * 2 + 1], 0};
+        char *end = NULL;
+        long byte_value = strtol(pair, &end, 16);
+        if (!end || *end || end == pair) return false;
+        out |= ((uint64_t)(uint8_t)byte_value) << (i * 8);
+    }
+    *value = out;
+    return true;
+}
+
+static bool read_pc_register(int fd, uint64_t *pc)
+{
+    char reply[PKT + 1];
+    if (!command(fd, "p20", reply, sizeof(reply))) {
+        logf1("RSP p20 (PC register) query timed out.\n");
+        return false;
+    }
+    if (reply[0] == 'E' || !parse_le_u64(reply, pc)) {
+        logf1("Could not decode PC register reply: %s\n", reply);
+        return false;
+    }
+    return true;
+}
+
+static bool write_pc_register(int fd, uint64_t pc)
+{
+    char q[64], reply[PKT + 1];
+    (void)snprintf(q, sizeof(q), "P20=%02x%02x%02x%02x%02x%02x%02x%02x",
+                   (unsigned)(pc & 0xff), (unsigned)((pc >> 8) & 0xff),
+                   (unsigned)((pc >> 16) & 0xff), (unsigned)((pc >> 24) & 0xff),
+                   (unsigned)((pc >> 32) & 0xff), (unsigned)((pc >> 40) & 0xff),
+                   (unsigned)((pc >> 48) & 0xff), (unsigned)((pc >> 56) & 0xff));
+    if (!command(fd, q, reply, sizeof(reply))) {
+        logf1("RSP PC register write timed out.\n");
+        return false;
+    }
+    logf1("PC register write for 0x%" PRIx64 ": %s\n", pc, reply);
+    return strcmp(reply, "OK") == 0;
+}
+
 static void set_socket_timeout_ms(int fd, long ms)
 {
     struct timeval tv;
@@ -313,9 +358,9 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
     char reply[PKT + 1];
 
     logf1("\n--- SeJointOut runtime trace ---\n");
-    logf1("Verified callsite A: module + 0x%llx = 0x%" PRIx64 "\n",
+    logf1("Candidate callsite A: module + 0x%llx = 0x%" PRIx64 "\n",
           (unsigned long long)SITE_A, addr_a);
-    logf1("Verified callsite B: module + 0x%llx = 0x%" PRIx64 "\n",
+    logf1("Candidate callsite B: module + 0x%llx = 0x%" PRIx64 "\n",
           (unsigned long long)SITE_B, addr_b);
     logf1("Temporary runtime breakpoints only; no files on SD are patched.\n");
 
@@ -344,7 +389,7 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
     while (!finished) {
         consoleClear();
         printf("OVERLAYDISP SOUND TRACE\n=======================\n\n");
-        printf("Temporary debugger breakpoints\n");
+        printf("Temporary debugger breakpoints (RAM only)\n");
         printf("Site A hits: %u\nSite B hits: %u\nOther stops: %u\n\n",
                hits_a, hits_b, other_stops);
         printf("Disconnect/reconnect Joy-Cons to reproduce.\n");
@@ -369,19 +414,31 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
         }
         if (!got_stop) continue;
 
-        uint64_t pc = 0;
-        if (!read_pc_from_stop(reply, &pc)) {
+        /* A debugger may deliver a queued "OK" packet before the async stop packet.
+         * It is a command response, not a CPU stop; ignore it and keep polling. */
+        if (strcmp(reply, "OK") == 0 || reply[0] == '\0') {
+            logf1("Ignored non-stop debugger reply while running: '%s'\n", reply);
+            continue;
+        }
+        if (reply[0] != 'T' && reply[0] != 'S' && reply[0] != 'W' && reply[0] != 'X') {
             ++other_stops;
-            logf1("Unclassified stop (PC not parsed): %s\n", reply);
+            logf1("Ignored non-stop debugger packet: %s\n", reply);
             save_log();
-            /* Do not single-step an unexpected stop. Clean up rather than risk a loop. */
+            continue;
+        }
+
+        uint64_t pc = 0;
+        if (!read_pc_register(fd, &pc)) {
+            ++other_stops;
+            logf1("Could not identify actual stop PC after reply: %s\n", reply);
+            save_log();
             finished = true;
             continue;
         }
-        uint64_t offset = pc - module_base;
+        uint64_t offset = pc >= module_base ? pc - module_base : UINT64_MAX;
         uint64_t hit_site = 0;
-        if (offset == SITE_A) { ++hits_a; hit_site = addr_a; }
-        else if (offset == SITE_B) { ++hits_b; hit_site = addr_b; }
+        if (offset == SITE_A || offset == SITE_A + 4) { ++hits_a; hit_site = addr_a; }
+        else if (offset == SITE_B || offset == SITE_B + 4) { ++hits_b; hit_site = addr_b; }
         else {
             ++other_stops;
             logf1("Unexpected stop PC=0x%" PRIx64 " (module offset 0x%" PRIx64 "): %s\n",
@@ -394,9 +451,15 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
               hit_site == addr_a ? "A" : "B", pc, hits_a, hits_b);
         save_log();
 
-        /* Remove the trap, step the original BL instruction once, then re-arm it. */
+        /* Remove the trap; normalise PC to the original instruction if the stub
+         * reports it after the four-byte BRK; then single-step the real BL. */
         if (!rsp_breakpoint(fd, false, hit_site)) {
             logf1("Could not remove hit breakpoint; aborting trace.\n");
+            finished = true;
+            continue;
+        }
+        if (pc == hit_site + 4 && !write_pc_register(fd, hit_site)) {
+            logf1("Could not restore PC to the breakpoint instruction; aborting.\n");
             finished = true;
             continue;
         }
@@ -483,7 +546,7 @@ static void run_probe(PadState *pad)
     logbuf[0] = '\0';
     logf1("OverlayDispTraceProbe - SeJointOut runtime trace\n");
     logf1("Program ID: 010000000000100C\n");
-    logf1("Calls traced: module offsets 0x315040 and 0x31507c.\n");
+    logf1("Runtime trace candidates: module offsets 0x315040 and 0x31507c.\n");
     logf1("Breakpoints exist only in debugger memory and will be removed at exit.\n");
 
     snprintf(status_line, sizeof(status_line), "Starting debugger connection...");
