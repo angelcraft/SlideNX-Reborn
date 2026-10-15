@@ -382,6 +382,46 @@ static bool get_stopped_thread(const char *stop_reply, char *thread, size_t cap)
     return true;
 }
 
+static bool is_stop_reply(const char *reply)
+{
+    return reply && (reply[0] == 'T' || reply[0] == 'S' ||
+                     reply[0] == 'W' || reply[0] == 'X');
+}
+
+/* Ctrl-C does not guarantee the very next RSP packet is a stop reply:
+   a queued command acknowledgement (OK) may arrive first. Keep waiting
+   for a real stop before attempting to remove software breakpoints. */
+static bool rsp_interrupt_and_wait(int fd, char *stop_reply, size_t cap)
+{
+    const char interrupt = 3;
+    if (send(fd, &interrupt, 1, 0) != 1) {
+        logf1("Could not send debugger interrupt.\n");
+        return false;
+    }
+
+    set_socket_timeout_ms(fd, 1500);
+    for (unsigned i = 0; i < 6; ++i) {
+        if (!read_packet(fd, stop_reply, cap)) {
+            logf1("Timed out waiting for a real stop reply after Ctrl-C.\n");
+            set_socket_timeout_ms(fd, 3000);
+            return false;
+        }
+        if (strcmp(stop_reply, "OK") == 0 || stop_reply[0] == '\0') {
+            logf1("Ignored non-stop reply during interrupt: '%s'\n", stop_reply);
+            continue;
+        }
+        if (is_stop_reply(stop_reply)) {
+            logf1("Confirmed stopped state after interrupt: %s\n", stop_reply);
+            set_socket_timeout_ms(fd, 3000);
+            return true;
+        }
+        logf1("Ignored unexpected packet while waiting for interrupt stop: %s\n", stop_reply);
+    }
+    set_socket_timeout_ms(fd, 3000);
+    logf1("No confirmed stopped state after Ctrl-C.\n");
+    return false;
+}
+
 /* With vCont support, step only the thread that hit the breakpoint. The
    command is asynchronous: wait for the resulting stop packet, ignoring
    queued command acknowledgements such as "OK". */
@@ -407,7 +447,20 @@ static bool rsp_single_step_thread(int fd, const char *thread, char *stop_reply,
             continue;
         }
         if (stop_reply[0] == 'T' || stop_reply[0] == 'S') {
-            logf1("Single-step stop reply: %s\n", stop_reply);
+            char stopped_thread[64];
+            if (!get_stopped_thread(stop_reply, stopped_thread, sizeof(stopped_thread))) {
+                logf1("Single-step stop reply omitted thread identity: %s\n", stop_reply);
+                set_socket_timeout_ms(fd, 3000);
+                return false;
+            }
+            if (strcmp(stopped_thread, thread) != 0) {
+                logf1("Single-step stopped unexpected thread %s (expected %s): %s\n",
+                      stopped_thread, thread, stop_reply);
+                set_socket_timeout_ms(fd, 3000);
+                return false;
+            }
+            logf1("Single-step stop reply confirmed for thread %s: %s\n",
+                  stopped_thread, stop_reply);
             set_socket_timeout_ms(fd, 3000);
             return true;
         }
@@ -426,6 +479,7 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
     uint64_t addr_b = module_base + SITE_B;
     unsigned hits_a = 0, hits_b = 0, other_stops = 0;
     char reply[PKT + 1];
+    bool target_stopped = true; /* vAttach leaves the process stopped in all-stop mode. */
 
     logf1("\n--- SeJointOut runtime trace ---\n");
     logf1("Candidate callsite A: module + 0x%llx = 0x%" PRIx64 "\n",
@@ -466,6 +520,7 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
         (void)rsp_detach(fd, pid);
         return false;
     }
+    target_stopped = false;
 
     bool finished = false;
     while (!finished) {
@@ -483,14 +538,17 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
         set_socket_timeout_ms(fd, 3000);
         padUpdate(pad);
         if (padGetButtonsDown(pad) & HidNpadButton_Plus) {
-            const char interrupt = 3;
-            (void)send(fd, &interrupt, 1, 0);
-            set_socket_timeout_ms(fd, 2500);
-            if (read_packet(fd, reply, sizeof(reply)))
-                logf1("Interrupt stop reply: %s\n", reply);
-            else
-                logf1("No interrupt reply received; cleanup will still be attempted.\n");
-            set_socket_timeout_ms(fd, 3000);
+            /* The poll may already have consumed the actual stop packet just
+               before PLUS was detected. Preserve that state instead of issuing
+               another interrupt and misreading a queued OK as a stop. */
+            if (got_stop && is_stop_reply(reply)) {
+                target_stopped = true;
+                logf1("PLUS pressed after stop was already received: %s\n", reply);
+            } else if (!target_stopped) {
+                target_stopped = rsp_interrupt_and_wait(fd, reply, sizeof(reply));
+            } else {
+                logf1("PLUS pressed while target was already known stopped.\n");
+            }
             finished = true;
             continue;
         }
@@ -502,12 +560,13 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
             logf1("Ignored non-stop debugger reply while running: '%s'\n", reply);
             continue;
         }
-        if (reply[0] != 'T' && reply[0] != 'S' && reply[0] != 'W' && reply[0] != 'X') {
+        if (!is_stop_reply(reply)) {
             ++other_stops;
             logf1("Ignored non-stop debugger packet: %s\n", reply);
             save_log();
             continue;
         }
+        target_stopped = true;
 
         uint64_t pc = 0;
         if (!read_pc_register(fd, &pc)) {
@@ -552,11 +611,13 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
             continue;
         }
         logf1("Hit thread: %s\n", hit_thread);
+        target_stopped = false;
         if (!rsp_single_step_thread(fd, hit_thread, reply, sizeof(reply))) {
-            logf1("Single-step over callsite failed; aborting trace.\n");
+            logf1("Single-step over callsite failed; target state is uncertain; cleanup will attempt to stop it first.\n");
             finished = true;
             continue;
         }
+        target_stopped = true;
         if (!rsp_breakpoint(fd, true, hit_site)) {
             logf1("Could not re-arm hit breakpoint; aborting trace.\n");
             finished = true;
@@ -567,10 +628,22 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
             finished = true;
             continue;
         }
+        target_stopped = false;
     }
 
-    (void)rsp_breakpoint(fd, false, addr_a);
-    (void)rsp_breakpoint(fd, false, addr_b);
+    /* Safety-first teardown: never write/remove a software breakpoint while
+       the process may be executing. First get a confirmed stop; if that fails,
+       avoid further code-memory modifications and try to detach. */
+    if (!target_stopped) {
+        logf1("Cleanup: target may be running; requesting a confirmed stop.\n");
+        target_stopped = rsp_interrupt_and_wait(fd, reply, sizeof(reply));
+    }
+    if (target_stopped) {
+        (void)rsp_breakpoint(fd, false, addr_a);
+        (void)rsp_breakpoint(fd, false, addr_b);
+    } else {
+        logf1("Cleanup warning: no confirmed stop; skipped breakpoint removal while execution state is uncertain.\n");
+    }
     (void)rsp_detach(fd, pid);
 
     logf1("\n--- trace result ---\nSite A hits: %u\nSite B hits: %u\nOther stops: %u\n",
