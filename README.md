@@ -1,8 +1,8 @@
-# SlideNX Reborn 2.4 — Sound Studio
+# SlideNX Reborn 2.5 — Audio Lab
 
 SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmodule.
 
-## New in 2.4
+## New in 2.5
 - Choose any MP3 in sd:/SlideNX/sounds/ for connect and disconnect sounds.
 - Keep original filenames; no renaming to IN.mp3 or OUT.mp3.
 - Persist chosen filenames and gain to sd:/SlideNX/settings.ini.
@@ -27,6 +27,14 @@ SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmod
 
 ## Controls
 The graphical interface is designed for 1280×720 output and is controlled with the Switch controller. If SDL2 cannot initialize, the app falls back to the text interface.
+
+## Audio Lab controls
+- Navigate to **Audio Lab / trim** and press A.
+- Use L/R to switch between connect and disconnect sources.
+- UP/DOWN selects trim start, trim end, fade-in, or fade-out.
+- LEFT/RIGHT adjusts the selected value in 250 ms steps.
+- A previews the selected trim; X resets trim and fades for that output; B returns to the main menu.
+- Trim end set to AUTO / EOF means the end of the source file. Waveform peak and RMS values are estimates, and RMS includes silence.
 
 - UP/DOWN: navigate main menu or picker.
 - Select Preview connect or Preview disconnect and press A to hear an 8-second sample.
