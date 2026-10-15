@@ -263,7 +263,7 @@ void gui_draw_main(int selected, const char *connect_name, const char *disconnec
         "PREVIEW CONNECT SOUND", "PREVIEW DISCONNECT",
         "CONVERSION GAIN", "CONVERT SELECTED SOUNDS",
         "INSTALL TO LAYEREDFS", "RESTORE PREVIOUS SOUNDS",
-        "REFRESH MP3 LIST", "EXIT SLIDENX"
+        "REFRESH MP3 LIST", "AUDIO LAB / TRIM", "EXIT SLIDENX"
     };
 
     frame_begin();
@@ -273,12 +273,12 @@ void gui_draw_main(int selected, const char *connect_name, const char *disconnec
     text_draw("MENU", 48, 130, 2, C_MUTED, 20);
     line(46, 153, 386, 153, C_BORDER);
 
-    for (int i = 0; i < 10; ++i) {
-        int y = 164 + i * 49;
+    for (int i = 0; i < 11; ++i) {
+        int y = 164 + i * 44;
         bool active = (i == selected);
         if (active) {
-            fill_rect(40, y, 352, 43, C_PANEL_HI);
-            fill_rect(40, y, 5, 43, C_ACCENT);
+            fill_rect(40, y, 352, 39, C_PANEL_HI);
+            fill_rect(40, y, 5, 39, C_ACCENT);
         }
         draw_truncated(items[i], 56, y + 13, 2,
                        active ? C_TEXT : C_MUTED, 323);
@@ -355,5 +355,105 @@ void gui_draw_picker(bool connecting, size_t count, const char *const *files, in
     text_draw("A  CHOOSE", 450, 650, 2, C_ACCENT, 18);
     text_draw("B  CANCEL", 650, 650, 2, C_MUTED, 18);
     text_draw("PLUS  EXIT", 850, 650, 2, C_MUTED, 18);
+    frame_end();
+}
+
+static void format_time(uint32_t milliseconds, char *buffer, size_t size)
+{
+    unsigned long total_seconds = (unsigned long)(milliseconds / 1000U);
+    unsigned long minutes = total_seconds / 60U;
+    unsigned long seconds = total_seconds % 60U;
+    unsigned long millis = (unsigned long)(milliseconds % 1000U);
+    (void)snprintf(buffer, size, "%02lu:%02lu.%03lu", minutes, seconds, millis);
+}
+
+void gui_draw_audio_lab(bool connecting, const char *filename,
+                        const AudioLabInfo *info, const AudioTrimOptions *options,
+                        int selected_row, const char *status)
+{
+    static const char *row_names[] = {"TRIM START", "TRIM END", "FADE IN", "FADE OUT"};
+    char duration[32], start[32], end[32], fade_in[32], fade_out[32], metric[80];
+    uint32_t dur = info && info->valid ? info->duration_ms : 0U;
+    uint32_t start_ms = options ? options->trim_start_ms : 0U;
+    uint32_t end_ms = options && options->trim_end_ms ? options->trim_end_ms : dur;
+    uint32_t fi_ms = options ? options->fade_in_ms : 0U;
+    uint32_t fo_ms = options ? options->fade_out_ms : 0U;
+    const int wave_x = 72, wave_y = 270, wave_width = 1136;
+    const int center_y = wave_y + 30;
+
+    format_time(dur, duration, sizeof(duration));
+    format_time(start_ms, start, sizeof(start));
+    if (options && options->trim_end_ms) format_time(end_ms, end, sizeof(end));
+    else (void)snprintf(end, sizeof(end), "AUTO / EOF");
+    format_time(fi_ms, fade_in, sizeof(fade_in));
+    format_time(fo_ms, fade_out, sizeof(fade_out));
+
+    frame_begin();
+    draw_header("AUDIO LAB", connecting ? "EDITING CONNECT SOUND" : "EDITING DISCONNECT SOUND");
+    panel(28, 112, 1224, 566, C_SIDEBAR, C_BORDER);
+
+    text_draw("SOURCE", 52, 128, 1, C_MUTED, 16);
+    draw_truncated(filename && filename[0] ? filename : "(NO MP3 SELECTED)",
+                   52, 146, 2, C_TEXT, 690);
+    text_draw("L / R  SWITCH SOURCE", 906, 145, 2, C_ACCENT, 30);
+
+    if (!info || !info->valid) {
+        text_draw("ANALYSIS UNAVAILABLE", 70, 214, 3, C_RED, 30);
+        draw_truncated(status ? status : "CHECK MP3 FILE", 70, 266, 2, C_TEXT, 1000);
+    } else {
+        (void)snprintf(metric, sizeof(metric), "DURATION  %s", duration);
+        text_draw(metric, 52, 190, 2, C_TEXT, 27);
+        (void)snprintf(metric, sizeof(metric), "PEAK  %.1f DBFS", info->peak_dbfs);
+        text_draw(metric, 455, 190, 2, C_ACCENT, 28);
+        (void)snprintf(metric, sizeof(metric), "RMS  %.1f DBFS", info->rms_dbfs);
+        text_draw(metric, 830, 190, 2, C_AMBER, 25);
+
+        panel(52, 222, 1176, 128, C_PANEL, C_BORDER);
+        line(wave_x, center_y, wave_x + wave_width, center_y, C_BORDER);
+        uint32_t effective_end = end_ms > 0 ? end_ms : dur;
+        int start_x = wave_x + (dur ? (int)(((uint64_t)start_ms * wave_width) / dur) : 0);
+        int end_x = wave_x + (dur ? (int)(((uint64_t)effective_end * wave_width) / dur) : wave_width);
+        if (start_x < wave_x) start_x = wave_x;
+        if (start_x > wave_x + wave_width) start_x = wave_x + wave_width;
+        if (end_x < start_x) end_x = start_x;
+        if (end_x > wave_x + wave_width) end_x = wave_x + wave_width;
+
+        for (int i = 0; i < AUDIO_LAB_WAVE_SAMPLES; ++i) {
+            int x = wave_x + (int)(((int64_t)i * wave_width) / AUDIO_LAB_WAVE_SAMPLES);
+            int bar_w = 5;
+            int h = (int)(((uint32_t)info->waveform[i] * 54U) / 1000U);
+            int sample_mid = wave_x + (int)(((int64_t)(i * 2 + 1) * wave_width) /
+                                            (AUDIO_LAB_WAVE_SAMPLES * 2));
+            bool included = sample_mid >= start_x && sample_mid < end_x;
+            GuiColor bar = included ? (connecting ? C_ACCENT : C_AMBER) : C_BORDER;
+            if (h < 2) h = 2;
+            fill_rect(x, center_y - h, bar_w, h * 2, bar);
+        }
+        line(start_x, 232, start_x, 343, C_TEXT);
+        line(end_x, 232, end_x, 343, C_TEXT);
+        text_draw("START", start_x > wave_x + 70 ? start_x - 42 : start_x + 3, 334, 1, C_TEXT, 8);
+        text_draw("END", end_x > wave_x + wave_width - 80 ? end_x - 26 : end_x + 3, 334, 1, C_TEXT, 6);
+    }
+
+    for (int row = 0; row < 4; ++row) {
+        int y = 369 + row * 52;
+        bool active = row == selected_row;
+        if (active) {
+            fill_rect(50, y, 1178, 44, C_PANEL_HI);
+            fill_rect(50, y, 5, 44, C_ACCENT);
+        }
+        text_draw(row_names[row], 72, y + 13, 2, active ? C_TEXT : C_MUTED, 22);
+        const char *value = row == 0 ? start : row == 1 ? end : row == 2 ? fade_in : fade_out;
+        draw_truncated(value, 500, y + 12, 2, active ? C_ACCENT : C_TEXT, 320);
+        if (row < 2)
+            text_draw("250 MS STEPS", 900, y + 15, 1, C_MUTED, 22);
+        else
+            text_draw("FADE DURATION", 900, y + 15, 1, C_MUTED, 22);
+    }
+
+    fill_rect(28, 581, 1224, 97, C_PANEL);
+    draw_truncated(status && status[0] ? status : "ANALYSIS READY", 48, 592, 1, C_MUTED, 1140);
+    text_draw("UP/DOWN ROW   LEFT/RIGHT ADJUST   A PREVIEW", 48, 615, 2, C_TEXT, 43);
+    text_draw("L/R SOURCE   X RESET   B BACK   PLUS EXIT", 48, 649, 2, C_ACCENT, 42);
     frame_end();
 }
