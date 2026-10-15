@@ -16,6 +16,8 @@
 
 #define PORT 22225
 #define REPORT "sdmc:/switch/OverlayDispTrace/report.txt"
+#define SITE_A 0x315040ULL
+#define SITE_B 0x31507cULL
 #define PKT 8192
 #define LOGSZ 60000
 
@@ -158,10 +160,25 @@ static void decode_hex(const char *src, char *dst, size_t cap)
     }
     dst[j] = 0;
 }
-static bool monitor_info(int fd)
+static bool is_hex_payload(const char *s)
+{
+    size_t n = strlen(s);
+    if (n == 0 || (n & 1)) return false;
+    for (size_t i = 0; i < n; ++i) {
+        char ch = s[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') ||
+              (ch >= 'A' && ch <= 'F'))) return false;
+    }
+    return true;
+}
+
+static bool monitor_info_text(int fd, char *out, size_t out_cap)
 {
     char q[64] = "qRcmd,";
     char r[PKT + 1];
+    size_t used = 0;
+    if (out_cap == 0) return false;
+    out[0] = '\0';
     const char *s = "get info";
     size_t n = strlen(q);
     for (size_t i = 0; s[i] && n + 2 < sizeof(q); ++i) {
@@ -169,18 +186,255 @@ static bool monitor_info(int fd)
         n += 2;
     }
     logf1("\n--- monitor get info ---\n");
-    if (!send_packet(fd, q)) return false;
-    for (unsigned i = 0; i < 128; ++i) {
-        if (!read_packet(fd, r, sizeof(r))) { logf1("monitor response timeout\n"); return false; }
-        if (r[0] == 'O') {
-            char decoded[PKT/2 + 1]; decode_hex(r + 1, decoded, sizeof(decoded));
-            logf1("%s", decoded); continue;
-        }
-        logf1("\n[monitor reply: %s]\n", r);
-        return strcmp(r, "OK") == 0;
+    if (!send_packet(fd, q)) {
+        logf1("Could not send monitor command.\n");
+        return false;
     }
-    logf1("monitor output exceeded safety limit\n"); return false;
+    for (unsigned i = 0; i < 128; ++i) {
+        if (!read_packet(fd, r, sizeof(r))) {
+            logf1("Monitor response timed out.\n");
+            return false;
+        }
+        if (strcmp(r, "OK") == 0) break;
+
+        const char *hex = NULL;
+        if (r[0] == 'O' && is_hex_payload(r + 1)) hex = r + 1;
+        else if (is_hex_payload(r)) hex = r;
+
+        if (hex != NULL) {
+            char decoded[PKT / 2 + 1];
+            decode_hex(hex, decoded, sizeof(decoded));
+            if (strstr(decoded, "Process:") != NULL && strstr(decoded, "Modules:") != NULL) {
+                size_t add = strlen(decoded);
+                if (add > out_cap - used - 1) add = out_cap - used - 1;
+                if (add) {
+                    memcpy(out + used, decoded, add);
+                    used += add;
+                    out[used] = '\0';
+                }
+                break;
+            }
+            if (r[0] == 'O') {
+                size_t add = strlen(decoded);
+                if (add > out_cap - used - 1) add = out_cap - used - 1;
+                if (add) {
+                    memcpy(out + used, decoded, add);
+                    used += add;
+                    out[used] = '\0';
+                }
+                continue;
+            }
+        }
+
+        logf1("[monitor final response: %s]\n", r);
+        break;
+    }
+    if (used != 0) {
+        logf1("%s", out);
+        if (out[used - 1] != '\n') logf1("\n");
+    }
+    return used != 0;
 }
+
+static bool parse_module_base(const char *info, uint64_t *base)
+{
+    const char *modules = strstr(info, "Modules:");
+    if (!modules) return false;
+    const char *p = strstr(modules, "0x");
+    if (!p) return false;
+    char *end = NULL;
+    unsigned long long value = strtoull(p + 2, &end, 16);
+    if (end == p + 2 || end == NULL || value == 0) return false;
+    *base = (uint64_t)value;
+    return true;
+}
+
+static bool read_pc_from_stop(const char *reply, uint64_t *pc)
+{
+    /* GDB AArch64 register 32 (hex ID 20) is PC; the value is little-endian. */
+    const char *p = strstr(reply, "20:");
+    if (!p) return false;
+    p += 3;
+    uint64_t value = 0;
+    unsigned bytes = 0;
+    while (bytes < 8 && p[0] && p[1] && p[0] != ';' && p[1] != ';') {
+        char pair[3] = {p[0], p[1], 0};
+        char *end = NULL;
+        long b = strtol(pair, &end, 16);
+        if (!end || *end || end == pair) break;
+        value |= ((uint64_t)(uint8_t)b) << (bytes * 8);
+        ++bytes;
+        p += 2;
+    }
+    if (bytes != 8) return false;
+    *pc = value;
+    return true;
+}
+
+static void set_socket_timeout_ms(int fd, long ms)
+{
+    struct timeval tv;
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+static bool rsp_breakpoint(int fd, bool add, uint64_t address)
+{
+    char q[80], reply[PKT + 1];
+    (void)snprintf(q, sizeof(q), "%s,%" PRIx64 ",4", add ? "Z0" : "z0", address);
+    if (!command(fd, q, reply, sizeof(reply))) {
+        logf1("Breakpoint command timed out for 0x%" PRIx64 ".\n", address);
+        return false;
+    }
+    logf1("%s breakpoint 0x%" PRIx64 ": %s\n", add ? "Set" : "Removed", address, reply);
+    return strcmp(reply, "OK") == 0;
+}
+
+static bool rsp_detach(int fd, unsigned long pid)
+{
+    char q[64], reply[PKT + 1];
+    (void)snprintf(q, sizeof(q), "D;%lx", pid);
+    if (command(fd, q, reply, sizeof(reply))) {
+        logf1("Debugger detach reply: %s\n", reply);
+        return true;
+    }
+    logf1("Debugger detach timed out. If overlayDisp remains paused, reboot the Switch.\n");
+    return false;
+}
+
+static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_base, PadState *pad)
+{
+    uint64_t addr_a = module_base + SITE_A;
+    uint64_t addr_b = module_base + SITE_B;
+    unsigned hits_a = 0, hits_b = 0, other_stops = 0;
+    char reply[PKT + 1];
+
+    logf1("\n--- SeJointOut runtime trace ---\n");
+    logf1("Verified callsite A: module + 0x%llx = 0x%" PRIx64 "\n",
+          (unsigned long long)SITE_A, addr_a);
+    logf1("Verified callsite B: module + 0x%llx = 0x%" PRIx64 "\n",
+          (unsigned long long)SITE_B, addr_b);
+    logf1("Temporary runtime breakpoints only; no files on SD are patched.\n");
+
+    if (!rsp_breakpoint(fd, true, addr_a)) {
+        logf1("Could not set breakpoint A; refusing to start trace.\n");
+        (void)rsp_detach(fd, pid);
+        return false;
+    }
+    if (!rsp_breakpoint(fd, true, addr_b)) {
+        (void)rsp_breakpoint(fd, false, addr_a);
+        logf1("Could not set breakpoint B; removed A and aborted.\n");
+        (void)rsp_detach(fd, pid);
+        return false;
+    }
+    save_log();
+
+    if (!send_packet(fd, "c")) {
+        logf1("Could not resume overlayDisp.\n");
+        (void)rsp_breakpoint(fd, false, addr_a);
+        (void)rsp_breakpoint(fd, false, addr_b);
+        (void)rsp_detach(fd, pid);
+        return false;
+    }
+
+    bool finished = false;
+    while (!finished) {
+        consoleClear();
+        printf("OVERLAYDISP SOUND TRACE\n=======================\n\n");
+        printf("Temporary debugger breakpoints\n");
+        printf("Site A hits: %u\nSite B hits: %u\nOther stops: %u\n\n",
+               hits_a, hits_b, other_stops);
+        printf("Disconnect/reconnect Joy-Cons to reproduce.\n");
+        printf("Press PLUS to stop and clean up breakpoints.\n");
+        consoleUpdate(NULL);
+
+        set_socket_timeout_ms(fd, 500);
+        bool got_stop = read_packet(fd, reply, sizeof(reply));
+        set_socket_timeout_ms(fd, 3000);
+        padUpdate(pad);
+        if (padGetButtonsDown(pad) & HidNpadButton_Plus) {
+            const char interrupt = 3;
+            (void)send(fd, &interrupt, 1, 0);
+            set_socket_timeout_ms(fd, 2500);
+            if (read_packet(fd, reply, sizeof(reply)))
+                logf1("Interrupt stop reply: %s\n", reply);
+            else
+                logf1("No interrupt reply received; cleanup will still be attempted.\n");
+            set_socket_timeout_ms(fd, 3000);
+            finished = true;
+            continue;
+        }
+        if (!got_stop) continue;
+
+        uint64_t pc = 0;
+        if (!read_pc_from_stop(reply, &pc)) {
+            ++other_stops;
+            logf1("Unclassified stop (PC not parsed): %s\n", reply);
+            save_log();
+            /* Do not single-step an unexpected stop. Clean up rather than risk a loop. */
+            finished = true;
+            continue;
+        }
+        uint64_t offset = pc - module_base;
+        uint64_t hit_site = 0;
+        if (offset == SITE_A) { ++hits_a; hit_site = addr_a; }
+        else if (offset == SITE_B) { ++hits_b; hit_site = addr_b; }
+        else {
+            ++other_stops;
+            logf1("Unexpected stop PC=0x%" PRIx64 " (module offset 0x%" PRIx64 "): %s\n",
+                  pc, offset, reply);
+            save_log();
+            finished = true;
+            continue;
+        }
+        logf1("Route hit: %s at PC 0x%" PRIx64 " (A=%u, B=%u)\n",
+              hit_site == addr_a ? "A" : "B", pc, hits_a, hits_b);
+        save_log();
+
+        /* Remove the trap, step the original BL instruction once, then re-arm it. */
+        if (!rsp_breakpoint(fd, false, hit_site)) {
+            logf1("Could not remove hit breakpoint; aborting trace.\n");
+            finished = true;
+            continue;
+        }
+        if (!command(fd, "s", reply, sizeof(reply)) ||
+            (reply[0] != 'T' && reply[0] != 'S')) {
+            logf1("Single-step over callsite failed: %s\n", reply);
+            finished = true;
+            continue;
+        }
+        if (!rsp_breakpoint(fd, true, hit_site)) {
+            logf1("Could not re-arm hit breakpoint; aborting trace.\n");
+            finished = true;
+            continue;
+        }
+        if (!send_packet(fd, "c")) {
+            logf1("Could not resume after hit.\n");
+            finished = true;
+            continue;
+        }
+    }
+
+    /* Ask the stub to stop the target if it was still running. */
+    const char interrupt = 3;
+    (void)send(fd, &interrupt, 1, 0);
+    set_socket_timeout_ms(fd, 2500);
+    (void)read_packet(fd, reply, sizeof(reply));
+    set_socket_timeout_ms(fd, 3000);
+    (void)rsp_breakpoint(fd, false, addr_a);
+    (void)rsp_breakpoint(fd, false, addr_b);
+    (void)rsp_detach(fd, pid);
+
+    logf1("\n--- trace result ---\nSite A hits: %u\nSite B hits: %u\nOther stops: %u\n",
+          hits_a, hits_b, other_stops);
+    logf1("If both counters stay at 0 after several disconnect events, this routing hypothesis was not observed.\n");
+    save_log();
+    snprintf(status_line, sizeof(status_line), "Trace finished: A=%u B=%u other=%u. Report saved.", hits_a, hits_b, other_stops);
+    return true;
+}
+
 static bool process_xml(int fd, char *xml, size_t cap)
 {
     char q[100], r[PKT + 1]; size_t used = 0; unsigned offset = 0;
@@ -221,76 +475,109 @@ static void draw_ui(void)
 {
     consoleClear();
     printf("OVERLAYDISP TRACE PROBE\n=======================\n\n");
-    printf("Read-only GDB query; no patches or memory writes.\n\n");
+    printf("Temporary runtime trace of SeJointOut routes.\n\n");
     printf("Status: %s\n\n", status_line);
-    printf("A: start / retry probe\nPLUS: exit\n\n");
+    printf("A: start trace (then disconnect Joy-Cons)\nPLUS: exit\n\n");
     printf("Report: %s\n", REPORT);
     consoleUpdate(NULL);
 }
 
-static void run_probe(void)
+static void run_probe(PadState *pad)
 {
-    loglen = 0; logbuf[0] = 0;
-    logf1("OverlayDispTraceProbe report\nProgram ID: 010000000000100C\n");
-    logf1("Read-only process/module snapshot. No breakpoints or memory writes.\n");
-    snprintf(status_line, sizeof(status_line), "Starting network probe...");
+    loglen = 0;
+    logbuf[0] = '\0';
+    logf1("OverlayDispTraceProbe - SeJointOut runtime trace\n");
+    logf1("Program ID: 010000000000100C\n");
+    logf1("Calls traced: module offsets 0x315040 and 0x31507c.\n");
+    logf1("Breakpoints exist only in debugger memory and will be removed at exit.\n");
+
+    snprintf(status_line, sizeof(status_line), "Starting debugger connection...");
     draw_ui();
     Result rc = socketInitializeDefault();
     if (R_FAILED(rc)) {
         logf1("socketInitializeDefault failed: 0x%08x\n", (unsigned)rc);
         snprintf(status_line, sizeof(status_line), "Socket init failed: 0x%08x", (unsigned)rc);
-        save_log(); return;
+        save_log();
+        return;
     }
-    snprintf(status_line, sizeof(status_line), "Detecting local network address...");
-    draw_ui();
-    struct in_addr local; char ip[INET_ADDRSTRLEN] = "127.0.0.1";
+
+    struct in_addr local;
+    char ip[INET_ADDRSTRLEN] = "127.0.0.1";
     bool have_ip = get_local_ip(&local);
     if (have_ip) (void)snprintf(ip, sizeof(ip), "%s", inet_ntoa(local));
-    snprintf(status_line, sizeof(status_line), "Connecting to GDB stub (2 s timeout per address)...");
+
+    snprintf(status_line, sizeof(status_line), "Connecting to Atmosphere GDB stub...");
     draw_ui();
-    int fd = try_connect("127.0.0.1"); const char *used_ip = "127.0.0.1";
+    int fd = try_connect("127.0.0.1");
+    const char *used_ip = "127.0.0.1";
     if (fd < 0 && have_ip) { fd = try_connect(ip); used_ip = ip; }
     if (fd < 0) {
         logf1("Cannot connect to 127.0.0.1:%d or %s:%d. errno=%d\n", PORT, ip, PORT, errno);
-        logf1("Check Atmosphere config and reboot: enable_standalone_gdbstub=u8!0x1; enable_htc=u8!0x0\n");
-        snprintf(status_line, sizeof(status_line), "GDB stub not reachable; report saved.");
-        save_log(); socketExit(); return;
+        snprintf(status_line, sizeof(status_line), "GDB stub unavailable. Report saved.");
+        save_log();
+        socketExit();
+        return;
     }
     logf1("Connected to %s:%d\n", used_ip, PORT);
-    (void)snprintf(status_line, sizeof(status_line), "Connected; querying process list...");
+
     char reply[PKT + 1];
-    snprintf(status_line, sizeof(status_line), "Connected. Querying debugger...");
-    draw_ui();
-    if (command(fd, "qSupported", reply, sizeof(reply))) logf1("\n--- qSupported ---\n%s\n", reply);
-    else logf1("qSupported timeout\n");
+    if (command(fd, "qSupported", reply, sizeof(reply)))
+        logf1("qSupported reply: %s\n", reply);
 
     snprintf(status_line, sizeof(status_line), "Reading process list...");
     draw_ui();
-    char *xml = calloc(1, 50001);
+    char *xml = (char *)calloc(1, 50001);
     unsigned long pid = 0;
     if (xml && process_xml(fd, xml, 50001)) pid = find_pid(xml);
     if (!pid) {
-        logf1("\nNo overlayDisp PID parsed automatically; process XML above is preserved.\n");
-        snprintf(status_line, sizeof(status_line), "Process list saved; inspect report.txt.");
-    } else {
-        logf1("\nFound overlayDisp PID decimal=%lu hex=%lx\n", pid, pid);
-        snprintf(status_line, sizeof(status_line), "Found PID %lu; querying module map...", pid);
-        draw_ui();
-        char q[64];
-        (void)snprintf(q, sizeof(q), "vAttach;%lx", pid);
-        if (command(fd, q, reply, sizeof(reply))) {
-            logf1("\n--- attach reply ---\n%s\n", reply);
-            if (reply[0] == 'T' || reply[0] == 'S' || reply[0] == 'W') {
-                (void)monitor_info(fd);
-                (void)snprintf(q, sizeof(q), "D;%lx", pid);
-                if (command(fd, q, reply, sizeof(reply))) logf1("\n--- detach reply ---\n%s\n", reply);
-                else logf1("Detach timeout; reboot if process remains paused.\n");
-            } else logf1("Attach rejected; detach not sent.\n");
-        } else logf1("Attach timeout; no more commands sent.\n");
-        snprintf(status_line, sizeof(status_line), "Done. Report saved for PID %lu.", pid);
+        logf1("Could not locate overlayDisp PID in GDB process list.\n");
+        snprintf(status_line, sizeof(status_line), "overlayDisp not found; report saved.");
+        save_log();
+        free(xml);
+        close(fd);
+        socketExit();
+        return;
     }
-    free(xml); close(fd); socketExit();
-    logf1("\nProbe finished; no breakpoints or memory writes were requested.\n");
+    free(xml);
+    logf1("Found overlayDisp PID decimal=%lu hex=%lx\n", pid, pid);
+
+    (void)snprintf(status_line, sizeof(status_line), "Attaching to overlayDisp PID %lu...", pid);
+    draw_ui();
+    (void)snprintf(reply, sizeof(reply), "");
+    char q[64];
+    (void)snprintf(q, sizeof(q), "vAttach;%lx", pid);
+    if (!command(fd, q, reply, sizeof(reply)) ||
+        (reply[0] != 'T' && reply[0] != 'S' && reply[0] != 'W')) {
+        logf1("Attach failed or unexpected reply: %s\n", reply);
+        snprintf(status_line, sizeof(status_line), "Attach failed; report saved.");
+        save_log();
+        close(fd);
+        socketExit();
+        return;
+    }
+    logf1("Attach reply: %s\n", reply);
+
+    char info[8192];
+    uint64_t module_base = 0;
+    if (!monitor_info_text(fd, info, sizeof(info)) || !parse_module_base(info, &module_base)) {
+        logf1("Could not decode module base from Atmosphere monitor get info. No breakpoints were set.\n");
+        snprintf(status_line, sizeof(status_line), "Module base not decoded; report saved.");
+        save_log();
+        (void)rsp_detach(fd, pid);
+        close(fd);
+        socketExit();
+        return;
+    }
+    logf1("overlayDisp module base: 0x%" PRIx64 "\n", module_base);
+    logf1("Breakpoint targets: 0x%" PRIx64 " and 0x%" PRIx64 "\n",
+          module_base + SITE_A, module_base + SITE_B);
+    save_log();
+
+    snprintf(status_line, sizeof(status_line), "Trace ready. Disconnect Joy-Cons; PLUS stops.");
+    draw_ui();
+    (void)trace_jointout_routes(fd, pid, module_base, pad);
+    close(fd);
+    socketExit();
     save_log();
 }
 int main(void)
@@ -301,7 +588,7 @@ int main(void)
     while (appletMainLoop()) {
         padUpdate(&pad); u64 down = padGetButtonsDown(&pad);
         if (down & HidNpadButton_Plus) break;
-        if (down & HidNpadButton_A) { snprintf(status_line, sizeof(status_line), "Running probe..."); run_probe(); }
+        if (down & HidNpadButton_A) { snprintf(status_line, sizeof(status_line), "Starting SeJointOut trace..."); run_probe(&pad); }
         draw_ui();
         svcSleepThread(20000000ULL);
     }
