@@ -742,17 +742,25 @@ static bool baseline(const char *target, const char *backup, const char *state)
         }
         fp = fopen(state, "w");
         if (!fp) return false;
-        if (fputs("present\n", fp) < 0 || fclose(fp) != 0) {
-            (void)remove_if_exists(state);
-            return false;
+        {
+            bool write_ok = fputs("present\n", fp) >= 0;
+            bool close_ok = fclose(fp) == 0;
+            if (!write_ok || !close_ok) {
+                (void)remove_if_exists(state);
+                return false;
+            }
         }
         return true;
     }
     fp = fopen(state, "w");
     if (!fp) return false;
-    if (fputs("missing\n", fp) < 0 || fclose(fp) != 0) {
-        (void)remove_if_exists(state);
-        return false;
+    {
+        bool write_ok = fputs("missing\n", fp) >= 0;
+        bool close_ok = fclose(fp) == 0;
+        if (!write_ok || !close_ok) {
+            (void)remove_if_exists(state);
+            return false;
+        }
     }
     return true;
 }
