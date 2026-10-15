@@ -1,6 +1,12 @@
-# SlideNX Reborn 2.6 — Audio Lab Plus
+# SlideNX Reborn 2.7 — Polish & Quick Restart
 
 SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmodule.
+
+## New in 2.7
+- Add a dedicated **Restart Switch** menu item so installed LayeredFS changes can be applied without manually closing SlideNX first.
+- Require an explicit confirmation screen before requesting a system reboot; **B** or **PLUS** cancels safely.
+- Fit all 12 main-menu actions within the graphical sidebar and keep the text fallback menu in sync.
+- Update the NRO application version to 2.7.0.
 
 ## New in 2.6
 - Choose any MP3 in sd:/SlideNX/sounds/ for connect and disconnect sounds.
@@ -28,7 +34,7 @@ SlideNX Reborn is a foreground Nintendo Switch homebrew app (.nro), not a sysmod
 4. Open SlideNX, choose connect/disconnect MP3s, and optionally adjust gain.
 5. Preview either sound first if desired.
 6. Press A on Convert selected sounds.
-7. Press Y (or select Install) and reboot to test.
+7. Press Y (or select Install) to install the sounds.\n8. Choose **Restart Switch** and confirm with A to apply the changes.
 
 ## Controls
 The graphical interface is designed for 1280×720 output and is controlled with the Switch controller. If SDL2 cannot initialize, the app falls back to the text interface.
@@ -48,7 +54,7 @@ The graphical interface is designed for 1280×720 output and is controlled with 
 - B: refresh file list / cancel picker.
 - Y: install converted RAWs.
 - X: restore original LayeredFS state.
-- PLUS: exit or cancel picker.
+- Restart Switch: choose the menu item, then press A on the confirmation screen to reboot; B / PLUS cancels.\n- PLUS: exit or cancel picker.
 
 ## Paths
 Converted output: sd:/SlideNX/output/joint.raw and joint_out.raw.
@@ -57,6 +63,6 @@ LayeredFS target: sd:/atmosphere/contents/010000000000100C/romfs/sound/.
 ## Notes
 After updating from an older version, convert both sounds once so SlideNX can create the validation metadata. The 2.6 preview path uses two aligned audio buffers and queues the next block while the current one is playing, reducing the chance of preview dropouts. Actual improvement must still be confirmed on hardware; conversion output is intentionally kept separate from preview playback.
 
-MP3 files are limited to 16 MiB and 120 seconds, and must use a constant sample rate. Each MP3 is normalized separately: active-sample RMS targets -18 dBFS, sample peaks are capped at -3 dBFS, and automatic boost is limited to +18 dB. This is an RMS-based estimate rather than LUFS metering. Manual gain is applied afterward, but the peak ceiling takes priority. Normalization reduces output-level clipping risk; it cannot repair distortion already present in the source MP3. The UI includes a controller-driven SDL2 graphical interface plus a text fallback. A successful build does not replace testing on the Switch OLED. Keep sd:/SlideNX/backup/ until restore has been verified.
+MP3 files are limited to 16 MiB and 120 seconds, and must use a constant sample rate. Each MP3 is normalized separately: active-sample RMS targets -18 dBFS, sample peaks are capped at -3 dBFS, and automatic boost is limited to +18 dB. This is an RMS-based estimate rather than LUFS metering. Manual gain is applied afterward, but the peak ceiling takes priority. Normalization reduces output-level clipping risk; it cannot repair distortion already present in the source MP3. The UI includes a controller-driven SDL2 graphical interface plus a text fallback. A successful build does not replace testing on the Switch OLED. The reboot request is available in application applet mode; if your launch context rejects it, SlideNX reports the error instead of silently claiming success (launching through title override may be required). Keep sd:/SlideNX/backup/ until restore has been verified.
 
 Based on SlideNX-Reborn and upstream SlideNX by jonyluke. See LICENSE for GPL v2. Vendored minimp3 notices remain in include/minimp3.h.
