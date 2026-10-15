@@ -1,311 +1,827 @@
-#include <ctype.h>
-#include <dirent.h>
 #include <stdbool.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <errno.h>
+#include <ctype.h>
+#include <dirent.h>
 #include <sys/stat.h>
-#include <time.h>
-
 #include <switch.h>
-#include <switch/services/fatal.h>
+#include "converter.h"
+#include "preview.h"
+#include "gui.h"
 
-#include "mp3.h"
+#define ROOT "sdmc:/SlideNX"
+#define SOUNDS ROOT "/sounds"
+#define SETTINGS ROOT "/settings.ini"
+#define SETTINGS_TMP ROOT "/settings.ini.tmp"
+#define LEGACY_IN ROOT "/IN.mp3"
+#define LEGACY_OUT ROOT "/OUT.mp3"
+#define OUTPUT_DIR ROOT "/output"
+#define RAW_IN OUTPUT_DIR "/joint.raw"
+#define RAW_OUT OUTPUT_DIR "/joint_out.raw"
+#define TMP_IN OUTPUT_DIR "/joint.raw.tmp"
+#define TMP_OUT OUTPUT_DIR "/joint_out.raw.tmp"
+#define BACKUP_DIR ROOT "/backup"
+#define BACKUP_IN BACKUP_DIR "/joint.raw"
+#define BACKUP_OUT BACKUP_DIR "/joint_out.raw"
+#define STATE_IN BACKUP_DIR "/joint.state"
+#define STATE_OUT BACKUP_DIR "/joint_out.state"
+#define TARGET_DIR "sdmc:/atmosphere/contents/010000000000100C/romfs/sound"
+#define TARGET_IN TARGET_DIR "/joint.raw"
+#define TARGET_OUT TARGET_DIR "/joint_out.raw"
+#define PATH_MAX_NX 600
+#define NAME_MAX_NX 256
+#define MAX_FILES 96
+#define PICKER_ROWS 14
 
-#define INNER_HEAP_SIZE 0x80000
-#define GPIO_LEFT_RAW_ID  0x0C
-#define GPIO_RIGHT_RAW_ID 0x34
-#define POLL_INTERVAL_NS  20000000ULL /* 20 ms */
-#define MAX_SOUND_FILES   96
-#define MAX_SOUND_PATH    512
-#define CONFIG_PATH       "sdmc:/SlideNX/config.ini"
-#define SOUND_DIRECTORY   "sdmc:/SlideNX/sounds"
-#define ATTACH_PATH       "sdmc:/SlideNX/sounds/attach.mp3"
-#define DETACH_PATH       "sdmc:/SlideNX/sounds/detach.mp3"
-#define LOG_PATH          "sdmc:/SlideNX/SlideNX.log"
-
-/* These two raw GPIO identifiers are inherited from upstream SlideNX. Their
- * behavior must still be verified on the OLED hardware; they are not public
- * named pads in libnx's enum. */
-
-size_t nx_inner_heap_size = INNER_HEAP_SIZE;
-char nx_inner_heap[INNER_HEAP_SIZE];
-u32 __nx_applet_type = AppletType_None;
-
-static GpioPadSession g_left_pad;
-static GpioPadSession g_right_pad;
-static bool g_gpio_initialized;
-static bool g_left_open;
-static bool g_right_open;
-static bool g_audio_initialized;
-static bool g_random_mode;
-static char g_sound_paths[MAX_SOUND_FILES][MAX_SOUND_PATH];
+typedef enum { UI_MAIN, UI_PICK_CONNECT, UI_PICK_DISCONNECT, UI_AUDIO_LAB } UiMode;
+static bool g_sd_ready;
+static bool g_ui_graphical;
+static bool g_outputs_ready;
+static int g_gain_db;
+static int g_menu_cursor;
+static int g_picker_cursor;
+static UiMode g_ui_mode = UI_MAIN;
 static size_t g_sound_count;
+static char g_sound_files[MAX_FILES][NAME_MAX_NX];
+static char g_connect[NAME_MAX_NX] = "";
+static char g_disconnect[NAME_MAX_NX] = "";
+static char g_status[256] = "Place MP3 files in sdmc:/SlideNX/sounds/.";
+static AudioTrimOptions g_connect_trim = {0};
+static AudioTrimOptions g_disconnect_trim = {0};
+static AudioLabInfo g_audio_lab_info;
+static bool g_audio_lab_connect = true;
+static int g_audio_lab_row = 0;
 
-void __libnx_initheap(void)
+static void copy_name(char *destination, size_t destination_size, const char *source)
 {
-    extern char *fake_heap_start;
-    extern char *fake_heap_end;
-
-    fake_heap_start = nx_inner_heap;
-    fake_heap_end = nx_inner_heap + nx_inner_heap_size;
+    size_t length;
+    if (destination == NULL || destination_size == 0) return;
+    if (source == NULL) { destination[0] = '\0'; return; }
+    length = strlen(source);
+    if (length >= destination_size) length = destination_size - 1;
+    memcpy(destination, source, length);
+    destination[length] = '\0';
 }
 
-void __attribute__((weak)) __appInit(void)
+static bool exists(const char *path)
 {
-    Result rc = smInitialize();
-    if (R_FAILED(rc))
-        fatalThrow(MAKERESULT(Module_Libnx, LibnxError_InitFail_SM));
-
-    rc = fsInitialize();
-    if (R_FAILED(rc))
-        fatalThrow(MAKERESULT(Module_Libnx, LibnxError_InitFail_FS));
+    struct stat st;
+    return stat(path, &st) == 0;
 }
 
-void __attribute__((weak)) userAppExit(void);
-
-void __attribute__((weak)) __appExit(void)
+static bool regular_nonempty(const char *path)
 {
-    (void)fsdevUnmountAll();
-    fsExit();
-    smExit();
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
 }
 
-static void log_message(const char *format, ...)
+static bool ensure_dir(const char *path)
 {
-    char message[384];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(message, sizeof(message), format, args);
-    va_end(args);
-
-    FILE *log = fopen(LOG_PATH, "a");
-    if (log != NULL) {
-        fprintf(log, "[SlideNX Reborn] %s\n", message);
-        fclose(log);
-    }
+    struct stat st;
+    if (mkdir(path, 0777) == 0) return true;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-static bool is_mp3_filename(const char *name)
+static bool ensure_app_dirs(void)
 {
-    const char *dot = strrchr(name, '.');
-    return dot != NULL && strcasecmp(dot, ".mp3") == 0;
+    return ensure_dir(ROOT) && ensure_dir(SOUNDS) &&
+           ensure_dir(OUTPUT_DIR) && ensure_dir(BACKUP_DIR);
 }
 
-static bool read_random_mode(void)
+static bool ensure_target_dir(void)
 {
-    FILE *file = fopen(CONFIG_PATH, "r");
-    char line[128];
-    bool random_mode = false; /* Safe default if the file/key is missing. */
+    return ensure_dir("sdmc:/atmosphere") &&
+           ensure_dir("sdmc:/atmosphere/contents") &&
+           ensure_dir("sdmc:/atmosphere/contents/010000000000100C") &&
+           ensure_dir("sdmc:/atmosphere/contents/010000000000100C/romfs") &&
+           ensure_dir(TARGET_DIR);
+}
 
-    if (file == NULL)
+static bool mount_sd(void)
+{
+    DIR *probe = opendir("sdmc:/");
+    if (probe) { closedir(probe); return true; }
+    Result rc = fsInitialize();
+    if (R_FAILED(rc)) {
+        snprintf(g_status, sizeof(g_status), "Filesystem init failed: 0x%08x.", (unsigned)rc);
         return false;
-
-    while (fgets(line, sizeof(line), file) != NULL) {
-        char *cursor = line;
-        char *equals;
-        char *value;
-
-        while (isspace((unsigned char)*cursor))
-            cursor++;
-        if (*cursor == '\0' || *cursor == '#' || *cursor == ';')
-            continue;
-        if (strncmp(cursor, "random", 6) != 0)
-            continue;
-
-        equals = strchr(cursor, '=');
-        if (equals == NULL)
-            continue;
-        value = equals + 1;
-        while (isspace((unsigned char)*value))
-            value++;
-        if (strncasecmp(value, "true", 4) == 0 || *value == '1')
-            random_mode = true;
-        else if (strncasecmp(value, "false", 5) == 0 || *value == '0')
-            random_mode = false;
     }
-
-    fclose(file);
-    return random_mode;
+    rc = fsdevMountSdmc();
+    if (R_FAILED(rc)) {
+        snprintf(g_status, sizeof(g_status), "SD mount failed: 0x%08x.", (unsigned)rc);
+        return false;
+    }
+    probe = opendir("sdmc:/");
+    if (!probe) { snprintf(g_status, sizeof(g_status), "SD root unavailable."); return false; }
+    closedir(probe);
+    return true;
 }
 
-static void load_sound_files(void)
+static bool copy_file(const char *source, const char *destination)
 {
-    DIR *directory = opendir(SOUND_DIRECTORY);
-    struct dirent *entry;
+    FILE *in = fopen(source, "rb");
+    FILE *out;
+    unsigned char buffer[8192];
+    size_t n;
+    bool ok = true;
+    if (!in) return false;
+    out = fopen(destination, "wb");
+    if (!out) { fclose(in); return false; }
+    while ((n = fread(buffer, 1, sizeof(buffer), in)) > 0) {
+        if (fwrite(buffer, 1, n, out) != n) { ok = false; break; }
+    }
+    if (ferror(in)) ok = false;
+    if (fclose(in) != 0) ok = false;
+    if (fclose(out) != 0) ok = false;
+    if (!ok) (void)remove(destination);
+    return ok;
+}
 
+static bool remove_if_exists(const char *path)
+{
+    return !exists(path) || remove(path) == 0;
+}
+
+static bool mp3_name(const char *name)
+{
+    const char *dot;
+    if (!name || !*name || name[0] == '.') return false;
+    dot = strrchr(name, '.');
+    return dot && strcasecmp(dot, ".mp3") == 0;
+}
+
+static bool safe_mp3_name(const char *name)
+{
+    return mp3_name(name) && strchr(name, '/') == NULL && strchr(name, '\\') == NULL;
+}
+
+static bool sound_path(const char *name, char *buffer, size_t size)
+{
+    int n;
+    if (!safe_mp3_name(name) || !buffer || size == 0) return false;
+    n = snprintf(buffer, size, "%s/%s", SOUNDS, name);
+    return n >= 0 && (size_t)n < size;
+}
+
+static int name_compare(const void *a, const void *b)
+{
+    return strcasecmp((const char *)a, (const char *)b);
+}
+
+static void scan_sounds(void)
+{
+    DIR *dir = opendir(SOUNDS);
+    struct dirent *entry;
     g_sound_count = 0;
-    if (directory == NULL) {
-        log_message("Cannot open sound directory (%s).", SOUND_DIRECTORY);
+    if (!dir) {
+        snprintf(g_status, sizeof(g_status), "Cannot open sounds folder.");
+        return;
+    }
+    while ((entry = readdir(dir)) != NULL && g_sound_count < MAX_FILES) {
+        char path[PATH_MAX_NX];
+        struct stat st;
+        int n;
+        if (!mp3_name(entry->d_name)) continue;
+        n = snprintf(path, sizeof(path), "%s/%s", SOUNDS, entry->d_name);
+        if (n < 0 || (size_t)n >= sizeof(path)) continue;
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0) continue;
+        copy_name(g_sound_files[g_sound_count], NAME_MAX_NX, entry->d_name);
+        g_sound_count++;
+    }
+    closedir(dir);
+    qsort(g_sound_files, g_sound_count, NAME_MAX_NX, name_compare);
+}
+
+static void migrate_legacy(void)
+{
+    char dst[PATH_MAX_NX];
+    scan_sounds();
+    if (g_sound_count != 0) return;
+    if (regular_nonempty(LEGACY_IN) && sound_path("IN.mp3", dst, sizeof(dst)))
+        (void)copy_file(LEGACY_IN, dst);
+    if (regular_nonempty(LEGACY_OUT) && sound_path("OUT.mp3", dst, sizeof(dst)))
+        (void)copy_file(LEGACY_OUT, dst);
+    scan_sounds();
+}
+
+static bool chosen_file_exists(const char *name)
+{
+    char path[PATH_MAX_NX];
+    return sound_path(name, path, sizeof(path)) && regular_nonempty(path);
+}
+
+static bool save_settings(void)
+{
+    FILE *fp;
+    if (!ensure_app_dirs()) return false;
+    fp = fopen(SETTINGS_TMP, "w");
+    if (!fp) return false;
+    if (fprintf(fp,
+                "connect=%s\ndisconnect=%s\ngain_db=%d\n"
+                "connect_trim_start_ms=%u\nconnect_trim_end_ms=%u\n"
+                "connect_fade_in_ms=%u\nconnect_fade_out_ms=%u\n"
+                "disconnect_trim_start_ms=%u\ndisconnect_trim_end_ms=%u\n"
+                "disconnect_fade_in_ms=%u\ndisconnect_fade_out_ms=%u\n",
+                g_connect, g_disconnect, g_gain_db,
+                g_connect_trim.trim_start_ms, g_connect_trim.trim_end_ms,
+                g_connect_trim.fade_in_ms, g_connect_trim.fade_out_ms,
+                g_disconnect_trim.trim_start_ms, g_disconnect_trim.trim_end_ms,
+                g_disconnect_trim.fade_in_ms, g_disconnect_trim.fade_out_ms) < 0) {
+        fclose(fp); (void)remove_if_exists(SETTINGS_TMP); return false;
+    }
+    if (fclose(fp) != 0) { (void)remove_if_exists(SETTINGS_TMP); return false; }
+    if (!remove_if_exists(SETTINGS) || rename(SETTINGS_TMP, SETTINGS) != 0) {
+        (void)remove_if_exists(SETTINGS_TMP); return false;
+    }
+    return true;
+}
+
+static uint32_t parse_ms_setting(const char *value, uint32_t maximum)
+{
+    char *end = NULL;
+    unsigned long parsed;
+    if (!value || !*value) return 0;
+    errno = 0;
+    parsed = strtoul(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0') return 0;
+    if (parsed > maximum) parsed = maximum;
+    return (uint32_t)parsed;
+}
+
+static void load_settings(void)
+{
+    FILE *fp = fopen(SETTINGS, "r");
+    char line[384], connect[NAME_MAX_NX] = "", disconnect[NAME_MAX_NX] = "";
+    int gain = 0;
+    AudioTrimOptions connect_trim = {0}, disconnect_trim = {0};
+    if (fp) {
+        while (fgets(line, sizeof(line), fp)) {
+            char *eq = strchr(line, '='), *key, *value;
+            size_t len;
+            if (!eq) continue;
+            *eq = '\0'; key = line; value = eq + 1;
+            while (isspace((unsigned char)*key)) key++;
+            while (isspace((unsigned char)*value)) value++;
+            len = strlen(value);
+            while (len && isspace((unsigned char)value[len - 1])) value[--len] = '\0';
+            if (!strcasecmp(key, "connect") && safe_mp3_name(value))
+                copy_name(connect, sizeof(connect), value);
+            else if (!strcasecmp(key, "disconnect") && safe_mp3_name(value))
+                copy_name(disconnect, sizeof(disconnect), value);
+            else if (!strcasecmp(key, "gain_db")) {
+                char *end = NULL; long v = strtol(value, &end, 10);
+                if (end != value && *end == '\0' && v >= -12 && v <= 6) gain = (int)v;
+            } else if (!strcasecmp(key, "connect_trim_start_ms"))
+                connect_trim.trim_start_ms = parse_ms_setting(value, 120000U);
+            else if (!strcasecmp(key, "connect_trim_end_ms"))
+                connect_trim.trim_end_ms = parse_ms_setting(value, 120000U);
+            else if (!strcasecmp(key, "connect_fade_in_ms"))
+                connect_trim.fade_in_ms = parse_ms_setting(value, 10000U);
+            else if (!strcasecmp(key, "connect_fade_out_ms"))
+                connect_trim.fade_out_ms = parse_ms_setting(value, 10000U);
+            else if (!strcasecmp(key, "disconnect_trim_start_ms"))
+                disconnect_trim.trim_start_ms = parse_ms_setting(value, 120000U);
+            else if (!strcasecmp(key, "disconnect_trim_end_ms"))
+                disconnect_trim.trim_end_ms = parse_ms_setting(value, 120000U);
+            else if (!strcasecmp(key, "disconnect_fade_in_ms"))
+                disconnect_trim.fade_in_ms = parse_ms_setting(value, 10000U);
+            else if (!strcasecmp(key, "disconnect_fade_out_ms"))
+                disconnect_trim.fade_out_ms = parse_ms_setting(value, 10000U);
+        }
+        fclose(fp);
+    }
+    g_gain_db = gain;
+    g_connect_trim = connect_trim;
+    g_disconnect_trim = disconnect_trim;
+    if (g_connect_trim.trim_end_ms && g_connect_trim.trim_end_ms <= g_connect_trim.trim_start_ms)
+        g_connect_trim.trim_start_ms = g_connect_trim.trim_end_ms = 0;
+    if (g_disconnect_trim.trim_end_ms && g_disconnect_trim.trim_end_ms <= g_disconnect_trim.trim_start_ms)
+        g_disconnect_trim.trim_start_ms = g_disconnect_trim.trim_end_ms = 0;
+    if (chosen_file_exists(connect)) copy_name(g_connect, sizeof(g_connect), connect);
+    else if (g_sound_count) copy_name(g_connect, sizeof(g_connect), g_sound_files[0]);
+    else g_connect[0] = '\0';
+
+    if (chosen_file_exists(disconnect)) copy_name(g_disconnect, sizeof(g_disconnect), disconnect);
+    else if (g_sound_count) copy_name(g_disconnect, sizeof(g_disconnect), g_sound_files[g_sound_count > 1 ? 1 : 0]);
+    else g_disconnect[0] = '\0';
+
+    g_connect[sizeof(g_connect) - 1] = '\0';
+    g_disconnect[sizeof(g_disconnect) - 1] = '\0';
+}
+
+static void refresh_all(void)
+{
+    if (!ensure_app_dirs()) { snprintf(g_status, sizeof(g_status), "Could not create SlideNX folders."); return; }
+    migrate_legacy();
+    load_settings();
+    g_outputs_ready = regular_nonempty(RAW_IN) && regular_nonempty(RAW_OUT);
+    snprintf(g_status, sizeof(g_status), "Found %lu MP3 file(s). Settings loaded.",
+             (unsigned long)g_sound_count);
+}
+
+static void open_picker(bool connect)
+{
+    scan_sounds();
+    if (!g_sound_count) {
+        snprintf(g_status, sizeof(g_status), "No MP3 files in sdmc:/SlideNX/sounds/.");
+        return;
+    }
+    const char *current = connect ? g_connect : g_disconnect;
+    g_picker_cursor = 0;
+    for (size_t i = 0; i < g_sound_count; i++)
+        if (!strcasecmp(g_sound_files[i], current)) { g_picker_cursor = (int)i; break; }
+    g_ui_mode = connect ? UI_PICK_CONNECT : UI_PICK_DISCONNECT;
+}
+
+static void accept_picker(void)
+{
+    if (!g_sound_count || g_picker_cursor < 0 || (size_t)g_picker_cursor >= g_sound_count)
+        return;
+    if (g_ui_mode == UI_PICK_CONNECT) {
+        copy_name(g_connect, sizeof(g_connect), g_sound_files[g_picker_cursor]);
+        g_connect[sizeof(g_connect) - 1] = '\0';
+        snprintf(g_status, sizeof(g_status), "Connect sound set: %.170s", g_connect);
+    } else {
+        copy_name(g_disconnect, sizeof(g_disconnect), g_sound_files[g_picker_cursor]);
+        g_disconnect[sizeof(g_disconnect) - 1] = '\0';
+        snprintf(g_status, sizeof(g_status), "Disconnect sound set: %.155s", g_disconnect);
+    }
+    if (!save_settings())
+        snprintf(g_status, sizeof(g_status), "Selection changed, but settings.ini could not be saved.");
+    g_outputs_ready = false;
+    g_ui_mode = UI_MAIN;
+}
+
+
+static AudioTrimOptions *audio_lab_options(void)
+{
+    return g_audio_lab_connect ? &g_connect_trim : &g_disconnect_trim;
+}
+
+static const char *audio_lab_filename(void)
+{
+    return g_audio_lab_connect ? g_connect : g_disconnect;
+}
+
+static void analyze_audio_lab_source(void)
+{
+    char path[PATH_MAX_NX], error[192] = "";
+    memset(&g_audio_lab_info, 0, sizeof(g_audio_lab_info));
+    const char *name = audio_lab_filename();
+    if (!sound_path(name, path, sizeof(path)) || !regular_nonempty(path)) {
+        snprintf(g_status, sizeof(g_status), "Choose a valid MP3 before opening Audio Lab.");
+        return;
+    }
+    if (audio_lab_analyze_mp3(path, &g_audio_lab_info, error, sizeof(error)) != 0) {
+        snprintf(g_status, sizeof(g_status), "Audio analysis failed: %.180s", error);
+        return;
+    }
+    snprintf(g_status, sizeof(g_status), "Analyzed %.120s (%lu ms).", name,
+             (unsigned long)g_audio_lab_info.duration_ms);
+}
+
+static void open_audio_lab(void)
+{
+    g_audio_lab_connect = true;
+    g_audio_lab_row = 0;
+    analyze_audio_lab_source();
+    g_ui_mode = UI_AUDIO_LAB;
+}
+
+static void change_audio_lab_source(bool connecting)
+{
+    if (g_audio_lab_connect == connecting) return;
+    g_audio_lab_connect = connecting;
+    g_audio_lab_row = 0;
+    analyze_audio_lab_source();
+}
+
+static void adjust_audio_lab(int delta)
+{
+    AudioTrimOptions *options = audio_lab_options();
+    uint32_t duration = g_audio_lab_info.valid ? g_audio_lab_info.duration_ms : 120000U;
+    if (duration < 250U) {
+        snprintf(g_status, sizeof(g_status), "Audio is too short to trim.");
+        return;
+    }
+    int64_t current, maximum, minimum;
+    switch (g_audio_lab_row) {
+        case 0:
+            current = (int64_t)options->trim_start_ms + (int64_t)delta * 250;
+            maximum = (int64_t)duration - 250;
+            if (options->trim_end_ms && maximum > (int64_t)options->trim_end_ms - 250)
+                maximum = (int64_t)options->trim_end_ms - 250;
+            if (current < 0) current = 0;
+            if (current > maximum) current = maximum;
+            options->trim_start_ms = (uint32_t)current;
+            break;
+        case 1:
+            current = options->trim_end_ms ? options->trim_end_ms : duration;
+            current += (int64_t)delta * 250;
+            minimum = (int64_t)options->trim_start_ms + 250;
+            maximum = duration;
+            if (current < minimum) current = minimum;
+            if (current > maximum) current = maximum;
+            options->trim_end_ms = current >= (int64_t)duration ? 0U : (uint32_t)current;
+            break;
+        case 2:
+            current = (int64_t)options->fade_in_ms + (int64_t)delta * 250;
+            maximum = duration < 10000U ? duration : 10000U;
+            if (current < 0) current = 0;
+            if (current > maximum) current = maximum;
+            options->fade_in_ms = (uint32_t)current;
+            break;
+        case 3:
+            current = (int64_t)options->fade_out_ms + (int64_t)delta * 250;
+            maximum = duration < 10000U ? duration : 10000U;
+            if (current < 0) current = 0;
+            if (current > maximum) current = maximum;
+            options->fade_out_ms = (uint32_t)current;
+            break;
+        default: return;
+    }
+    g_outputs_ready = false;
+    if (!save_settings())
+        snprintf(g_status, sizeof(g_status), "Audio Lab value changed; failed to save settings.");
+    else
+        snprintf(g_status, sizeof(g_status), "Audio Lab settings saved to settings.ini.");
+}
+
+static void reset_audio_lab(void)
+{
+    memset(audio_lab_options(), 0, sizeof(AudioTrimOptions));
+    g_outputs_ready = false;
+    if (!save_settings())
+        snprintf(g_status, sizeof(g_status), "Reset, but failed to save settings.ini.");
+    else
+        snprintf(g_status, sizeof(g_status), "Trim and fades reset for this sound.");
+}
+
+static void draw_audio_lab(void)
+{
+    if (g_ui_graphical) {
+        gui_draw_audio_lab(g_audio_lab_connect, audio_lab_filename(), &g_audio_lab_info,
+                           audio_lab_options(), g_audio_lab_row, g_status);
+    } else {
+        consoleClear();
+        printf("SlideNX Reborn 2.5 - Audio Lab\n\n");
+        printf("Source: %s (%s)\n", audio_lab_filename(),
+               g_audio_lab_connect ? "CONNECT" : "DISCONNECT");
+        if (g_audio_lab_info.valid)
+            printf("Duration: %lu ms  Peak: %.1f dBFS  RMS: %.1f dBFS\n",
+                   (unsigned long)g_audio_lab_info.duration_ms,
+                   g_audio_lab_info.peak_dbfs, g_audio_lab_info.rms_dbfs);
+        const AudioTrimOptions *o = audio_lab_options();
+        printf("%c Trim start: %u ms\n", g_audio_lab_row == 0 ? '>' : ' ', o->trim_start_ms);
+        printf("%c Trim end: %s%u ms\n", g_audio_lab_row == 1 ? '>' : ' ',
+               o->trim_end_ms ? "" : "AUTO / ", o->trim_end_ms);
+        printf("%c Fade in: %u ms\n", g_audio_lab_row == 2 ? '>' : ' ', o->fade_in_ms);
+        printf("%c Fade out: %u ms\n\n", g_audio_lab_row == 3 ? '>' : ' ', o->fade_out_ms);
+        printf("UP/DOWN row LEFT/RIGHT adjust A preview L/R source X reset B back PLUS exit\n");
+        printf("Status: %s\n", g_status);
+        consoleUpdate(NULL);
+    }
+}
+
+static void convert_both(void)
+{
+    char in_path[PATH_MAX_NX], out_path[PATH_MAX_NX], error[192] = "";
+    g_outputs_ready = false;
+    if (!sound_path(g_connect, in_path, sizeof(in_path)) ||
+        !sound_path(g_disconnect, out_path, sizeof(out_path)) ||
+        !regular_nonempty(in_path) || !regular_nonempty(out_path)) {
+        snprintf(g_status, sizeof(g_status), "Choose valid connect and disconnect MP3s first.");
+        return;
+    }
+    if (!ensure_app_dirs()) { snprintf(g_status, sizeof(g_status), "Could not create output folder."); return; }
+    (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT);
+
+    if (convert_mp3_to_raw(in_path, TMP_IN, g_gain_db, &g_connect_trim, error, sizeof(error)) != 0) {
+        snprintf(g_status, sizeof(g_status), "Connect conversion failed: %.170s", error);
+        (void)remove_if_exists(TMP_IN); return;
+    }
+    error[0] = '\0';
+    if (convert_mp3_to_raw(out_path, TMP_OUT, g_gain_db, &g_disconnect_trim, error, sizeof(error)) != 0) {
+        snprintf(g_status, sizeof(g_status), "Disconnect conversion failed: %.160s", error);
+        (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT); return;
+    }
+    if (!regular_nonempty(TMP_IN) || !regular_nonempty(TMP_OUT)) {
+        snprintf(g_status, sizeof(g_status), "Empty RAW output. LayeredFS was not changed.");
+        (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT); return;
+    }
+    if (!remove_if_exists(RAW_IN) || rename(TMP_IN, RAW_IN) != 0 ||
+        !remove_if_exists(RAW_OUT) || rename(TMP_OUT, RAW_OUT) != 0) {
+        snprintf(g_status, sizeof(g_status), "Could not save both RAW files. LayeredFS was not changed.");
+        (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT); return;
+    }
+    g_outputs_ready = true;
+    (void)save_settings();
+    snprintf(g_status, sizeof(g_status), "Auto-normalized both sounds; manual gain %s%d dB. Not installed yet.",
+             g_gain_db > 0 ? "+" : "", g_gain_db);
+}
+
+static void preview_selected(bool connecting)
+{
+    const char *name = connecting ? g_connect : g_disconnect;
+    char path[PATH_MAX_NX];
+    char error[192] = "";
+
+    if (!sound_path(name, path, sizeof(path)) || !regular_nonempty(path)) {
+        snprintf(g_status, sizeof(g_status), "Select a valid MP3 before previewing.");
         return;
     }
 
-    while ((entry = readdir(directory)) != NULL && g_sound_count < MAX_SOUND_FILES) {
-        char full_path[MAX_SOUND_PATH];
-        struct stat info;
-        int written;
-
-        if (entry->d_name[0] == '.' || !is_mp3_filename(entry->d_name))
-            continue;
-
-        written = snprintf(full_path, sizeof(full_path), "%s/%s", SOUND_DIRECTORY, entry->d_name);
-        if (written < 0 || (size_t)written >= sizeof(full_path))
-            continue;
-        if (stat(full_path, &info) != 0 || !S_ISREG(info.st_mode))
-            continue;
-
-        strncpy(g_sound_paths[g_sound_count], full_path, MAX_SOUND_PATH - 1);
-        g_sound_paths[g_sound_count][MAX_SOUND_PATH - 1] = '\0';
-        g_sound_count++;
-    }
-
-    closedir(directory);
-    log_message("Loaded %lu MP3 file(s); random mode=%s.",
-                (unsigned long)g_sound_count, g_random_mode ? "true" : "false");
-}
-
-static void play_connection_sound(bool attached)
-{
-    const char *path;
-    int rc;
-
-    if (g_random_mode && g_sound_count > 0) {
-        path = g_sound_paths[(size_t)rand() % g_sound_count];
+    snprintf(g_status, sizeof(g_status), "Playing an 8-second preview of %.140s.", name);
+    if (preview_mp3_trimmed(path, g_gain_db, connecting ? &g_connect_trim : &g_disconnect_trim, error, sizeof(error)) == 0) {
+        snprintf(g_status, sizeof(g_status), "Preview finished: %.170s", name);
     } else {
-        path = attached ? ATTACH_PATH : DETACH_PATH;
-    }
-
-    rc = playMp3(path);
-    if (rc != 0)
-        log_message("Could not play '%s' (decoder/audio/file error).", path);
-}
-
-static void close_runtime_services(void)
-{
-    if (g_left_open) {
-        gpioPadClose(&g_left_pad);
-        g_left_open = false;
-    }
-    if (g_right_open) {
-        gpioPadClose(&g_right_pad);
-        g_right_open = false;
-    }
-    if (g_gpio_initialized) {
-        gpioExit();
-        g_gpio_initialized = false;
-    }
-    if (g_audio_initialized) {
-        mp3SystemExit();
-        g_audio_initialized = false;
+        snprintf(g_status, sizeof(g_status), "Preview failed: %.180s", error);
     }
 }
 
-static bool initialize_gpio(GpioValue *left_initial, GpioValue *right_initial)
+static bool baseline(const char *target, const char *backup, const char *state)
 {
-    Result rc = gpioInitialize();
-    if (R_FAILED(rc)) {
-        log_message("gpioInitialize failed: 0x%08x.", (unsigned)rc);
+    FILE *fp = fopen(state, "r");
+    if (fp) { fclose(fp); return !exists(target) || regular_nonempty(target); }
+    if (exists(target) && !regular_nonempty(target)) {
+        snprintf(g_status, sizeof(g_status), "Refusing to replace non-file target: %.170s", target);
         return false;
     }
-    g_gpio_initialized = true;
+    if (regular_nonempty(target)) {
+        if (!copy_file(target, backup) || !regular_nonempty(backup)) {
+            snprintf(g_status, sizeof(g_status), "Could not back up target: %.170s", target);
+            return false;
+        }
+        fp = fopen(state, "w"); if (!fp) return false;
+        fputs("present\n", fp); return fclose(fp) == 0;
+    }
+    fp = fopen(state, "w"); if (!fp) return false;
+    fputs("missing\n", fp); return fclose(fp) == 0;
+}
 
-    rc = gpioOpenSession(&g_left_pad, (GpioPadName)GPIO_LEFT_RAW_ID);
-    if (R_FAILED(rc)) {
-        log_message("Opening left Joy-Con GPIO 0x%02x failed: 0x%08x.", GPIO_LEFT_RAW_ID, (unsigned)rc);
-        return false;
-    }
-    g_left_open = true;
+static bool read_state(const char *path, char *value, size_t size)
+{
+    FILE *fp = fopen(path, "r");
+    if (!fp) return false;
+    if (!fgets(value, (int)size, fp)) { fclose(fp); return false; }
+    fclose(fp); return true;
+}
 
-    rc = gpioOpenSession(&g_right_pad, (GpioPadName)GPIO_RIGHT_RAW_ID);
-    if (R_FAILED(rc)) {
-        log_message("Opening right Joy-Con GPIO 0x%02x failed: 0x%08x.", GPIO_RIGHT_RAW_ID, (unsigned)rc);
-        return false;
+static bool restore_one(const char *target, const char *backup, const char *state)
+{
+    char value[24] = "", temporary[PATH_MAX_NX];
+    if (!read_state(state, value, sizeof(value))) return false;
+    if (!strncmp(value, "present", 7)) {
+        if (!regular_nonempty(backup) ||
+            snprintf(temporary, sizeof(temporary), "%s.slidenx-restore-tmp", target) >= (int)sizeof(temporary))
+            return false;
+        (void)remove_if_exists(temporary);
+        if (!copy_file(backup, temporary)) return false;
+        if (!remove_if_exists(target) || rename(temporary, target) != 0) {
+            (void)remove_if_exists(temporary); return false;
+        }
+        return true;
     }
-    g_right_open = true;
+    if (!strncmp(value, "missing", 7)) return remove_if_exists(target);
+    return false;
+}
 
-    rc = gpioPadSetDirection(&g_left_pad, GpioDirection_Input);
-    if (R_FAILED(rc)) {
-        log_message("Setting left GPIO input failed: 0x%08x.", (unsigned)rc);
-        return false;
+static bool rollback_target(const char *target, const char *previous, bool existed)
+{
+    if (!remove_if_exists(target)) return false;
+    if (!existed) return true;
+    return regular_nonempty(previous) && rename(previous, target) == 0;
+}
+
+static void install_both(void)
+{
+    const char *tmp_in = TARGET_IN ".slidenx-new";
+    const char *tmp_out = TARGET_OUT ".slidenx-new";
+    const char *prev_in = TARGET_IN ".slidenx-prev";
+    const char *prev_out = TARGET_OUT ".slidenx-prev";
+    bool old_in, old_out;
+
+    if (!g_outputs_ready || !regular_nonempty(RAW_IN) || !regular_nonempty(RAW_OUT)) {
+        snprintf(g_status, sizeof(g_status), "Convert both selected MP3s before installing."); return;
     }
-    rc = gpioPadSetDirection(&g_right_pad, GpioDirection_Input);
-    if (R_FAILED(rc)) {
-        log_message("Setting right GPIO input failed: 0x%08x.", (unsigned)rc);
-        return false;
+    if (!ensure_app_dirs() || !ensure_target_dir()) {
+        snprintf(g_status, sizeof(g_status), "Could not create LayeredFS folders."); return;
+    }
+    if (!baseline(TARGET_IN, BACKUP_IN, STATE_IN) || !baseline(TARGET_OUT, BACKUP_OUT, STATE_OUT)) {
+        snprintf(g_status, sizeof(g_status), "Baseline backup failed; installation cancelled."); return;
+    }
+    if ((exists(TARGET_IN) && !regular_nonempty(TARGET_IN)) ||
+        (exists(TARGET_OUT) && !regular_nonempty(TARGET_OUT))) {
+        snprintf(g_status, sizeof(g_status), "Refusing to replace non-file target."); return;
     }
 
-    rc = gpioPadGetValue(&g_left_pad, left_initial);
-    if (R_FAILED(rc)) {
-        log_message("Reading left GPIO failed: 0x%08x.", (unsigned)rc);
-        return false;
+    old_in = regular_nonempty(TARGET_IN);
+    old_out = regular_nonempty(TARGET_OUT);
+    (void)remove_if_exists(tmp_in); (void)remove_if_exists(tmp_out);
+    (void)remove_if_exists(prev_in); (void)remove_if_exists(prev_out);
+    if (!copy_file(RAW_IN, tmp_in) || !regular_nonempty(tmp_in) ||
+        !copy_file(RAW_OUT, tmp_out) || !regular_nonempty(tmp_out)) {
+        (void)remove_if_exists(tmp_in); (void)remove_if_exists(tmp_out);
+        snprintf(g_status, sizeof(g_status), "Could not stage outputs; old sounds untouched."); return;
     }
-    rc = gpioPadGetValue(&g_right_pad, right_initial);
-    if (R_FAILED(rc)) {
-        log_message("Reading right GPIO failed: 0x%08x.", (unsigned)rc);
-        return false;
+    if ((old_in && !copy_file(TARGET_IN, prev_in)) || (old_out && !copy_file(TARGET_OUT, prev_out))) {
+        (void)remove_if_exists(tmp_in); (void)remove_if_exists(tmp_out);
+        (void)remove_if_exists(prev_in); (void)remove_if_exists(prev_out);
+        snprintf(g_status, sizeof(g_status), "Could not prepare rollback copies; nothing installed."); return;
     }
 
-    log_message("GPIO sessions ready; initial levels L=%u R=%u.",
-                (unsigned)*left_initial, (unsigned)*right_initial);
-    return true;
+    if (!remove_if_exists(TARGET_IN) || !remove_if_exists(TARGET_OUT)) {
+        (void)rollback_target(TARGET_IN, prev_in, old_in);
+        (void)rollback_target(TARGET_OUT, prev_out, old_out);
+        (void)remove_if_exists(tmp_in); (void)remove_if_exists(tmp_out);
+        snprintf(g_status, sizeof(g_status), "Target staging failed; rollback attempted."); return;
+    }
+    if (rename(tmp_in, TARGET_IN) != 0) {
+        (void)rollback_target(TARGET_IN, prev_in, old_in);
+        (void)rollback_target(TARGET_OUT, prev_out, old_out);
+        (void)remove_if_exists(tmp_out);
+        snprintf(g_status, sizeof(g_status), "Could not install joint.raw; rollback attempted."); return;
+    }
+    if (rename(tmp_out, TARGET_OUT) != 0) {
+        (void)rollback_target(TARGET_IN, prev_in, old_in);
+        (void)rollback_target(TARGET_OUT, prev_out, old_out);
+        (void)remove_if_exists(tmp_out);
+        snprintf(g_status, sizeof(g_status), "Could not install joint_out.raw; rollback attempted."); return;
+    }
+    (void)remove_if_exists(prev_in); (void)remove_if_exists(prev_out);
+    snprintf(g_status, sizeof(g_status), "Both sounds installed. Reboot to test.");
+}
+
+static void restore_baseline(void)
+{
+    bool in_ok, out_ok;
+    if (!exists(STATE_IN) || !exists(STATE_OUT)) {
+        snprintf(g_status, sizeof(g_status), "No baseline backup. Install first to enable restore."); return;
+    }
+    if (!ensure_target_dir()) { snprintf(g_status, sizeof(g_status), "LayeredFS folder unavailable."); return; }
+    in_ok = restore_one(TARGET_IN, BACKUP_IN, STATE_IN);
+    out_ok = restore_one(TARGET_OUT, BACKUP_OUT, STATE_OUT);
+    snprintf(g_status, sizeof(g_status), "Restore: joint.raw %s; joint_out.raw %s.",
+             in_ok ? "OK" : "FAILED", out_ok ? "OK" : "FAILED");
+}
+
+static void adjust_gain(int delta)
+{
+    g_gain_db += delta;
+    if (g_gain_db < -12) g_gain_db = -12;
+    if (g_gain_db > 6) g_gain_db = 6;
+    g_outputs_ready = false;
+    if (!save_settings())
+        snprintf(g_status, sizeof(g_status), "Gain %s%d dB; failed to save settings.", g_gain_db > 0 ? "+" : "", g_gain_db);
+    else
+        snprintf(g_status, sizeof(g_status), "Conversion gain is %s%d dB.", g_gain_db > 0 ? "+" : "", g_gain_db);
+}
+
+static void draw_picker(void)
+{
+    if (g_ui_graphical) {
+        const char *files[MAX_FILES];
+        for (size_t i = 0; i < g_sound_count; i++) files[i] = g_sound_files[i];
+        gui_draw_picker(g_ui_mode == UI_PICK_CONNECT, g_sound_count, files, g_picker_cursor);
+        return;
+    }
+    size_t start = g_picker_cursor >= PICKER_ROWS ? (size_t)(g_picker_cursor - PICKER_ROWS + 1) : 0;
+    consoleClear();
+    printf("SlideNX Reborn 2.4 - Select %s sound\n\n",
+           g_ui_mode == UI_PICK_CONNECT ? "CONNECT" : "DISCONNECT");
+    printf("Folder: sdmc:/SlideNX/sounds/\nUP/DOWN to navigate; A select; B cancel.\n");
+    printf("Found %lu MP3 file(s).\n\n", (unsigned long)g_sound_count);
+    for (size_t i = start; i < g_sound_count && i < start + PICKER_ROWS; i++)
+        printf("%c %s\n", (int)i == g_picker_cursor ? '>' : ' ', g_sound_files[i]);
+    printf("\nA: Choose  B: Cancel\n");
+    consoleUpdate(NULL);
+}
+
+static void draw_main(void)
+{
+    if (g_ui_graphical) {
+        gui_draw_main(g_menu_cursor, g_connect, g_disconnect, g_gain_db,
+                      g_status, g_outputs_ready, g_sd_ready);
+        return;
+    }
+    const char *items[] = {"Choose connect sound", "Choose disconnect sound",
+        "Preview connect sound", "Preview disconnect sound", "Conversion gain",
+        "Convert selected sounds", "Install to LayeredFS", "Restore previous sounds",
+        "Refresh MP3 list", "Audio Lab / trim", "Exit"};
+    char gain_text[48];
+    snprintf(gain_text, sizeof(gain_text), "Conversion gain: %s%d dB",
+             g_gain_db > 0 ? "+" : "", g_gain_db);
+
+    consoleClear();
+    printf("SlideNX Reborn 2.4 - Sound Studio\n");
+    printf("=================================\n\n");
+    printf("CONNECT:    %s\n", g_connect[0] ? g_connect : "(not selected)");
+    printf("DISCONNECT: %s\n\n", g_disconnect[0] ? g_disconnect : "(not selected)");
+    printf("MP3 folder: sdmc:/SlideNX/sounds/\n");
+    printf("Output RAW: sdmc:/SlideNX/output/\n");
+    printf("Format: mono PCM 16-bit LE, 48000 Hz, headerless\n");
+    printf("Auto level: RMS target -18 dBFS; peak ceiling -3 dBFS\n\n");
+    for (int i = 0; i < 10; i++)
+        printf("%c %s\n", i == g_menu_cursor ? '>' : ' ', i == 4 ? gain_text : items[i]);
+    printf("\nStatus: %s\n\n", g_status);
+    printf("UP/DOWN: Navigate   A: Select   LEFT/RIGHT: Gain +/-1 dB on gain row\n");
+    printf("Y: Install   X: Restore   B: Refresh list   PLUS: Exit\n");
+    consoleUpdate(NULL);
 }
 
 int main(void)
 {
-    GpioValue left_previous = GpioValue_Low;
-    GpioValue right_previous = GpioValue_Low;
-    Result rc;
+    PadState pad;
+    g_ui_graphical = gui_init();
+    if (!g_ui_graphical) consoleInit(NULL);
+    padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+    padInitializeDefault(&pad);
 
-    rc = fsdevMountSdmc();
-    if (R_SUCCEEDED(rc))
-        log_message("Startup. SD card mounted.");
+    g_sd_ready = mount_sd();
+    if (g_sd_ready) refresh_all();
 
-    g_random_mode = read_random_mode();
-    load_sound_files();
-    srand((unsigned)time(NULL));
+    while (appletMainLoop()) {
+        padUpdate(&pad);
+        u64 down = padGetButtonsDown(&pad);
 
-    if (mp3SystemInit() == 0) {
-        g_audio_initialized = true;
-        log_message("Audio/MP3 runtime ready; output sample rate=%u.", (unsigned)audoutGetSampleRate());
-    } else {
-        log_message("Audio/MP3 initialization failed; monitoring will continue without sound.");
-    }
-
-    if (!initialize_gpio(&left_previous, &right_previous)) {
-        log_message("GPIO initialization failed; module will exit so it does not spin uselessly.");
-        close_runtime_services();
-        return 1;
-    }
-
-    /* Sysmodules do not have an applet lifecycle to poll. Keep the worker alive
-     * and sleep between reads, instead of depending on appletMainLoop(). */
-    for (;;) {
-        GpioValue left_now;
-        GpioValue right_now;
-        Result left_rc;
-        Result right_rc;
-
-        svcSleepThread(POLL_INTERVAL_NS);
-
-        left_rc = gpioPadGetValue(&g_left_pad, &left_now);
-        right_rc = gpioPadGetValue(&g_right_pad, &right_now);
-
-        if (R_SUCCEEDED(left_rc) && left_now != left_previous) {
-            log_message("Left GPIO changed %u -> %u.", (unsigned)left_previous, (unsigned)left_now);
-            left_previous = left_now;
-            /* Preserve the original SlideNX polarity: low=attached, high=detached. */
-            play_connection_sound(left_now == GpioValue_Low);
+        if (down & HidNpadButton_Plus) {
+            if (g_ui_mode != UI_MAIN) {
+                g_ui_mode = UI_MAIN;
+                snprintf(g_status, sizeof(g_status), "Editor/picker closed.");
+            } else break;
         }
-        if (R_SUCCEEDED(right_rc) && right_now != right_previous) {
-            log_message("Right GPIO changed %u -> %u.", (unsigned)right_previous, (unsigned)right_now);
-            right_previous = right_now;
-            play_connection_sound(right_now == GpioValue_Low);
-        }
-    }
 
-    /* Unreachable in normal operation; retained for completeness. */
-    close_runtime_services();
+        if (g_ui_mode == UI_AUDIO_LAB) {
+            if (down & HidNpadButton_B) {
+                g_ui_mode = UI_MAIN;
+                snprintf(g_status, sizeof(g_status), "Audio Lab closed.");
+            } else if (down & HidNpadButton_L) {
+                change_audio_lab_source(false);
+            } else if (down & HidNpadButton_R) {
+                change_audio_lab_source(true);
+            } else if (down & HidNpadButton_Up) {
+                if (g_audio_lab_row > 0) g_audio_lab_row--;
+            } else if (down & HidNpadButton_Down) {
+                if (g_audio_lab_row < 3) g_audio_lab_row++;
+            } else if (down & HidNpadButton_Left) {
+                adjust_audio_lab(-1);
+            } else if (down & HidNpadButton_Right) {
+                adjust_audio_lab(1);
+            } else if (down & HidNpadButton_X) {
+                reset_audio_lab();
+            } else if (down & HidNpadButton_A) {
+                preview_selected(g_audio_lab_connect);
+            }
+            if (g_ui_mode == UI_AUDIO_LAB) draw_audio_lab();
+            else draw_main();
+        } else if (g_ui_mode == UI_PICK_CONNECT || g_ui_mode == UI_PICK_DISCONNECT) {
+            if (down & HidNpadButton_B) {
+                g_ui_mode = UI_MAIN;
+                snprintf(g_status, sizeof(g_status), "Picker cancelled.");
+            } else if (down & HidNpadButton_Up) {
+                if (g_picker_cursor > 0) g_picker_cursor--;
+            } else if (down & HidNpadButton_Down) {
+                if ((size_t)(g_picker_cursor + 1) < g_sound_count) g_picker_cursor++;
+            } else if (down & HidNpadButton_A) {
+                accept_picker();
+                if (g_ui_mode == UI_MAIN) draw_main();
+            }
+            if (g_ui_mode != UI_MAIN) draw_picker();
+            else draw_main();
+        } else {
+            if (down & HidNpadButton_Up) { if (g_menu_cursor > 0) g_menu_cursor--; }
+            if (down & HidNpadButton_Down) { if (g_menu_cursor < 10) g_menu_cursor++; }
+            if (g_menu_cursor == 4 && (down & HidNpadButton_Left)) adjust_gain(-1);
+            if (g_menu_cursor == 4 && (down & HidNpadButton_Right)) adjust_gain(1);
+
+            if (down & HidNpadButton_B) { if (g_sd_ready) refresh_all(); }
+            if (down & HidNpadButton_X) { if (g_sd_ready) restore_baseline(); }
+            if (down & HidNpadButton_Y) { if (g_sd_ready) install_both(); }
+            if (down & HidNpadButton_A) {
+                if (!g_sd_ready) snprintf(g_status, sizeof(g_status), "SD card unavailable.");
+                else switch (g_menu_cursor) {
+                    case 0: open_picker(true); break;
+                    case 1: open_picker(false); break;
+                    case 2: preview_selected(true); break;
+                    case 3: preview_selected(false); break;
+                    case 4: adjust_gain(1); break;
+                    case 5: convert_both(); break;
+                    case 6: install_both(); break;
+                    case 7: restore_baseline(); break;
+                    case 8: refresh_all(); break;
+                    case 9: open_audio_lab(); break;
+                    case 10:
+                        if (g_ui_graphical) gui_exit(); else consoleExit(NULL);
+                        return 0;
+                }
+            }
+            if (g_ui_mode == UI_MAIN) draw_main();
+        }
+        svcSleepThread(16000000ULL);
+    }
+    if (g_ui_graphical) gui_exit(); else consoleExit(NULL);
     return 0;
 }
