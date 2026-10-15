@@ -369,6 +369,57 @@ static bool rsp_resume_process(int fd, unsigned long pid)
     return send_packet(fd, q);
 }
 
+static bool get_stopped_thread(const char *stop_reply, char *thread, size_t cap)
+{
+    const char *p = strstr(stop_reply, "thread:");
+    if (!p) return false;
+    p += strlen("thread:");
+    const char *end = strchr(p, ';');
+    size_t n = end ? (size_t)(end - p) : strlen(p);
+    if (n == 0 || n >= cap) return false;
+    memcpy(thread, p, n);
+    thread[n] = '\0';
+    return true;
+}
+
+/* With vCont support, step only the thread that hit the breakpoint. The
+   command is asynchronous: wait for the resulting stop packet, ignoring
+   queued command acknowledgements such as "OK". */
+static bool rsp_single_step_thread(int fd, const char *thread, char *stop_reply, size_t cap)
+{
+    char q[128];
+    (void)snprintf(q, sizeof(q), "vCont;s:%s", thread);
+    logf1("Single-step stopped thread: %s\n", q);
+    if (!send_packet(fd, q)) {
+        logf1("Could not send vCont single-step request.\n");
+        return false;
+    }
+
+    set_socket_timeout_ms(fd, 3000);
+    for (unsigned i = 0; i < 8; ++i) {
+        if (!read_packet(fd, stop_reply, cap)) {
+            logf1("Timed out waiting for vCont single-step stop reply.\n");
+            set_socket_timeout_ms(fd, 3000);
+            return false;
+        }
+        if (strcmp(stop_reply, "OK") == 0 || stop_reply[0] == '\0') {
+            logf1("Ignored non-stop reply during single-step: '%s'\n", stop_reply);
+            continue;
+        }
+        if (stop_reply[0] == 'T' || stop_reply[0] == 'S') {
+            logf1("Single-step stop reply: %s\n", stop_reply);
+            set_socket_timeout_ms(fd, 3000);
+            return true;
+        }
+        logf1("Unexpected response during single-step: %s\n", stop_reply);
+        set_socket_timeout_ms(fd, 3000);
+        return false;
+    }
+    set_socket_timeout_ms(fd, 3000);
+    logf1("Too many non-stop replies while waiting for single-step.\n");
+    return false;
+}
+
 static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_base, PadState *pad)
 {
     uint64_t addr_a = module_base + SITE_A;
@@ -483,7 +534,7 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
         save_log();
 
         /* Remove the trap; normalise PC to the original instruction if the stub
-         * reports it after the four-byte BRK; then single-step the real BL. */
+         * reports it after the four-byte BRK; single-step only the hit thread. */
         if (!rsp_breakpoint(fd, false, hit_site)) {
             logf1("Could not remove hit breakpoint; aborting trace.\n");
             finished = true;
@@ -494,9 +545,15 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
             finished = true;
             continue;
         }
-        if (!command(fd, "s", reply, sizeof(reply)) ||
-            (reply[0] != 'T' && reply[0] != 'S')) {
-            logf1("Single-step over callsite failed: %s\n", reply);
+        char hit_thread[64];
+        if (!get_stopped_thread(reply, hit_thread, sizeof(hit_thread))) {
+            logf1("Stop reply did not identify the hit thread; refusing legacy single-step. Reply: %s\n", reply);
+            finished = true;
+            continue;
+        }
+        logf1("Hit thread: %s\n", hit_thread);
+        if (!rsp_single_step_thread(fd, hit_thread, reply, sizeof(reply))) {
+            logf1("Single-step over callsite failed; aborting trace.\n");
             finished = true;
             continue;
         }
