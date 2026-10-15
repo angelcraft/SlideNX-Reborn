@@ -848,14 +848,110 @@ static void draw_ui(void)
     consoleUpdate(NULL);
 }
 
+static uint32_t read_hex_u32_le(const char *hex, size_t byte_offset)
+{
+    uint32_t value = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+        char pair[3] = {hex[(byte_offset + i) * 2], hex[(byte_offset + i) * 2 + 1], 0};
+        value |= ((uint32_t)strtoul(pair, NULL, 16) & 0xffu) << (i * 8);
+    }
+    return value;
+}
+
+static int64_t sign_extend_21(uint32_t value)
+{
+    value &= 0x1fffffu;
+    return (value & 0x100000u) ? (int64_t)value - 0x200000LL : (int64_t)value;
+}
+
+/* No breakpoints and no single-stepping. Scan a small code window for ADRP
+   instructions that reference the pages containing the two strings seen in
+   prior traces, then verify whether a following ADD computes the exact pointer. */
+static void scan_string_xrefs_read_only(int fd, uint64_t module_base)
+{
+    const uint64_t joycon_string = module_base + 0x38f80dULL;
+    const uint64_t battery_string = module_base + 0x391ea0ULL;
+    const uint64_t joycon_page = joycon_string & ~0xfffULL;
+    const uint64_t battery_page = battery_string & ~0xfffULL;
+    const uint64_t scan_start = module_base + 0x310000ULL;
+    const uint64_t scan_end = module_base + 0x320000ULL;
+    const size_t chunk_size = 0x400;
+    char hex[0x801];
+    unsigned page_refs = 0, exact_refs = 0, read_errors = 0;
+
+    logf1("\n--- v9 read-only string xref scan ---\n");
+    logf1("No software breakpoints or single-step commands are used.\n");
+    logf1("Suspected SeJointOut string: 0x%" PRIx64 " (page 0x%" PRIx64 ")\n",
+          joycon_string, joycon_page);
+    logf1("SeBatteryRateOut string: 0x%" PRIx64 " (page 0x%" PRIx64 ")\n",
+          battery_string, battery_page);
+    logf1("Scan window: 0x%" PRIx64 " .. 0x%" PRIx64 " (0x%" PRIx64 " bytes)\n",
+          scan_start, scan_end, scan_end - scan_start);
+    logf1("Scanning; overlayDisp will be paused only during read-only inspection.\n");
+    save_log();
+
+    for (uint64_t chunk = scan_start; chunk < scan_end; chunk += chunk_size) {
+        if (!rsp_read_memory(fd, chunk, chunk_size, hex, sizeof(hex))) {
+            ++read_errors;
+            logf1("Read error at 0x%" PRIx64 "\n", chunk);
+            continue;
+        }
+
+        for (size_t offset = 0; offset + 8 <= chunk_size; offset += 4) {
+            uint32_t insn = read_hex_u32_le(hex, offset);
+            if ((insn & 0x9f000000u) != 0x90000000u) continue; /* ADRP */
+            uint32_t immlo = (insn >> 29) & 0x3u;
+            uint32_t immhi = (insn >> 5) & 0x7ffffu;
+            uint32_t imm21 = (immhi << 2) | immlo;
+            int64_t page_delta = sign_extend_21(imm21) * 4096LL;
+            uint64_t pc = chunk + offset;
+            uint64_t target_page = (uint64_t)((int64_t)(pc & ~0xfffULL) + page_delta);
+            if (target_page != joycon_page && target_page != battery_page) continue;
+
+            unsigned rd = insn & 31u;
+            ++page_refs;
+            logf1("ADRP page ref at 0x%" PRIx64 ": x%u -> 0x%" PRIx64 " (%s page)\n",
+                  pc, rd, target_page,
+                  target_page == joycon_page ? "SeJointOut" : "SeBatteryRateOut");
+
+            uint32_t add = read_hex_u32_le(hex, offset + 4);
+            if ((add & 0x7f000000u) == 0x11000000u) {
+                unsigned add_rd = add & 31u;
+                unsigned add_rn = (add >> 5) & 31u;
+                uint64_t imm12 = (add >> 10) & 0xfffu;
+                if ((add >> 22) & 1u) imm12 <<= 12;
+                if (add_rd == rd && add_rn == rd) {
+                    uint64_t effective = target_page + imm12;
+                    logf1("  following ADD at 0x%" PRIx64 " -> 0x%" PRIx64,
+                          pc + 4, effective);
+                    if (effective == joycon_string || effective == battery_string) {
+                        ++exact_refs;
+                        logf1(" [EXACT STRING POINTER MATCH]");
+                    } else {
+                        logf1(" [different offset on same page]");
+                    }
+                    logf1("\n");
+                }
+            }
+        }
+    }
+
+    logf1("Xref scan summary: matching ADRP page refs=%u, exact string pointer refs=%u, memory read errors=%u\n",
+          page_refs, exact_refs, read_errors);
+    if (page_refs == 0)
+        logf1("No references to either target page found in this window; the real caller may be outside it.\n");
+    save_log();
+}
+
 static void run_probe(PadState *pad)
 {
     loglen = 0;
     logbuf[0] = '\0';
-    logf1("OverlayDispTraceProbe - SeJointOut runtime trace\n");
+    logf1("OverlayDispReferenceScan v9 - read-only xref scan\n");
+    logf1("Probe build: v9-readonly-xref-window-310000-320000\n");
     logf1("Program ID: 010000000000100C\n");
-    logf1("Runtime trace candidates: module offsets 0x315040 and 0x31507c.\n");
-    logf1("Breakpoints exist only in debugger memory and will be removed at exit.\n");
+    logf1("Previous candidate callsites: module offsets 0x315040 and 0x31507c.\n");
+    logf1("This build does not install software breakpoints or single-step.\n");
 
     snprintf(status_line, sizeof(status_line), "Starting debugger connection...");
     draw_ui();
@@ -935,15 +1031,17 @@ static void run_probe(PadState *pad)
         return;
     }
     logf1("overlayDisp module base: 0x%" PRIx64 "\n", module_base);
-    logf1("Breakpoint targets: 0x%" PRIx64 " and 0x%" PRIx64 "\n",
-          module_base + SITE_A, module_base + SITE_B);
     save_log();
 
-    snprintf(status_line, sizeof(status_line), "Trace ready. Disconnect Joy-Cons; PLUS stops.");
+    snprintf(status_line, sizeof(status_line), "Scanning nearby code references (read-only)...");
     draw_ui();
-    (void)trace_jointout_routes(fd, pid, module_base, pad);
+    scan_string_xrefs_read_only(fd, module_base);
+    (void)rsp_detach(fd, pid);
+    logf1("Debugger detached after read-only scan. No breakpoints were installed.\n");
     close(fd);
     socketExit();
+    snprintf(status_line, sizeof(status_line), "v9 xref scan complete; report saved.");
+    draw_ui();
     save_log();
 }
 int main(void)
