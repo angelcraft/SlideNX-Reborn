@@ -136,6 +136,27 @@ static bool read_packet(int fd, char *out, size_t cap)
     if (!read_byte(fd, &h) || !read_byte(fd, &h)) return false;
     out[n] = 0;
     (void)send(fd, "+", 1, 0);
+
+    /* GDB RSP run-length encoding: e.g. "0*," expands to sixteen '0' chars.
+       Decode in place after consuming the checksum of the compressed payload. */
+    size_t read_pos = 0, write_pos = 0;
+    while (read_pos < n) {
+        if (out[read_pos] == '*' && write_pos > 0 && read_pos + 1 < n) {
+            unsigned char count_char = (unsigned char)out[read_pos + 1];
+            if (count_char >= 32) {
+                size_t repeat = (size_t)(count_char - 29);
+                char previous = out[write_pos - 1];
+                read_pos += 2;
+                while (repeat-- > 0 && write_pos + 1 < cap)
+                    out[write_pos++] = previous;
+                continue;
+            }
+        }
+        char value = out[read_pos++];
+        if (write_pos + 1 < cap)
+            out[write_pos++] = value;
+    }
+    out[write_pos] = 0;
     return true;
 }
 static bool send_packet(int fd, const char *p)
@@ -287,6 +308,18 @@ static bool parse_le_u64(const char *hex, uint64_t *value)
     return true;
 }
 
+static bool rsp_select_general_thread(int fd, const char *thread)
+{
+    char q[96], reply[PKT + 1];
+    (void)snprintf(q, sizeof(q), "Hg%s", thread);
+    if (!command(fd, q, reply, sizeof(reply))) {
+        logf1("Selecting general thread %s timed out.\\n", thread);
+        return false;
+    }
+    logf1("Selected general thread %s: %s\\n", thread, reply);
+    return strcmp(reply, "OK") == 0;
+}
+
 static bool read_pc_register(int fd, uint64_t *pc)
 {
     char reply[PKT + 1];
@@ -349,8 +382,8 @@ static bool rsp_read_memory(int fd, uint64_t address, size_t length, char *hex, 
 
 static void dump_code_region(int fd, uint64_t address, size_t length, const char *label)
 {
-    char hex[0x202];
-    if (length == 0 || length > 0x100 || sizeof(hex) < length * 2 + 1) {
+    char hex[0x802];
+    if (length == 0 || length > 0x400 || sizeof(hex) < length * 2 + 1) {
         logf1("Skipping oversized code dump '%s' (length=0x%zx).\n", label, length);
         return;
     }
@@ -367,10 +400,10 @@ static void dump_candidate_code(int fd, uint64_t module_base)
     /* Read-only, before breakpoints are installed. */
     dump_code_region(fd, module_base + SITE_A - 0x20, 0x80,
                      "candidate callsites A/B");
-    /* Both BL encodings in the first dump resolve to module + 0x356710.
-       Read the callee body so we can identify its behavior offline. */
-    dump_code_region(fd, module_base + 0x356710, 0x100,
-                     "shared call target module+0x356710");
+    /* Include forward branches near the end of the callee, allowing offline
+       disassembly of the complete hot path. */
+    dump_code_region(fd, module_base + 0x356710, 0x400,
+                     "shared call target module+0x356710 (extended body)");
 }
 
 static void dump_x1_pointed_memory(int fd)
@@ -671,6 +704,23 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
         }
         target_stopped = true;
 
+        /* Bind register queries to the thread named by the stop packet. */
+        char hit_thread[64];
+        if (!get_stopped_thread(reply, hit_thread, sizeof(hit_thread))) {
+            ++other_stops;
+            logf1("Stop reply did not identify a thread; refusing ambiguous register reads: %s\\n", reply);
+            save_log();
+            finished = true;
+            continue;
+        }
+        if (!rsp_select_general_thread(fd, hit_thread)) {
+            ++other_stops;
+            logf1("Could not select stopped thread %s; aborting trace.\\n", hit_thread);
+            save_log();
+            finished = true;
+            continue;
+        }
+
         uint64_t pc = 0;
         if (!read_pc_register(fd, &pc)) {
             ++other_stops;
@@ -708,13 +758,7 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
             finished = true;
             continue;
         }
-        char hit_thread[64];
-        if (!get_stopped_thread(reply, hit_thread, sizeof(hit_thread))) {
-            logf1("Stop reply did not identify the hit thread; refusing legacy single-step. Reply: %s\n", reply);
-            finished = true;
-            continue;
-        }
-        logf1("Hit thread: %s\n", hit_thread);
+        logf1("Hit thread: %s\\n", hit_thread);
         target_stopped = false;
         if (!rsp_single_step_thread(fd, hit_thread, reply, sizeof(reply))) {
             logf1("Single-step over callsite failed; target state is uncertain; cleanup will attempt to stop it first.\n");
