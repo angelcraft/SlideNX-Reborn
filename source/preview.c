@@ -32,6 +32,86 @@ static void wait_for_buffer(AudioOutBuffer **released)
     }
 }
 
+static size_t fill_preview_samples(uint8_t *pcm_buffer, const int16_t *mono,
+                                      size_t mono_count, uint64_t base,
+                                      uint64_t total_frames, int source_rate,
+                                      double gain, const AudioTrimOptions *trim,
+                                      bool reached_preview_limit)
+{
+    size_t frames = (size_t)((total_frames - base) > PCM_FRAMES_PER_BUFFER ?
+                             PCM_FRAMES_PER_BUFFER : (total_frames - base));
+    int16_t *samples = (int16_t *)pcm_buffer;
+    uint64_t fade_in_frames = trim ? ((uint64_t)trim->fade_in_ms * TARGET_RATE) / 1000U : 0U;
+    uint64_t fade_out_frames = trim ? ((uint64_t)trim->fade_out_ms * TARGET_RATE) / 1000U : 0U;
+    uint64_t trimmed_source_ms = ((uint64_t)mono_count * 1000U) / (uint64_t)source_rate;
+    uint64_t requested_ms = trim && trim->trim_end_ms > 0 &&
+                            trim->trim_end_ms > trim->trim_start_ms ?
+                            trim->trim_end_ms - trim->trim_start_ms : UINT64_MAX;
+    bool fade_out_reaches_end = !reached_preview_limit ||
+                                (requested_ms != UINT64_MAX &&
+                                 requested_ms <= trimmed_source_ms + 30U);
+
+    if (!fade_out_reaches_end) fade_out_frames = 0;
+    if (fade_in_frames > total_frames) fade_in_frames = total_frames;
+    if (fade_out_frames > total_frames) fade_out_frames = total_frames;
+
+    for (size_t frame = 0; frame < frames; ++frame) {
+        uint64_t i = base + frame;
+        uint64_t position = i * (uint64_t)source_rate;
+        uint64_t index = position / TARGET_RATE;
+        uint32_t fraction = (uint32_t)(position % TARGET_RATE);
+        int32_t first, second;
+        double sample_value;
+        long value;
+
+        if (index >= mono_count) index = mono_count - 1U;
+        first = mono[index];
+        second = index + 1U < mono_count ? mono[index + 1U] : first;
+        sample_value = ((double)first +
+                        ((double)second - (double)first) * (double)fraction / TARGET_RATE) * gain;
+
+        if (fade_in_frames > 1U && i < fade_in_frames)
+            sample_value *= (double)i / (double)(fade_in_frames - 1U);
+        if (fade_out_frames > 1U && i >= total_frames - fade_out_frames)
+            sample_value *= (double)(total_frames - 1U - i) / (double)(fade_out_frames - 1U);
+
+        value = lrint(sample_value);
+        if (value > 32767) value = 32767;
+        if (value < -32768) value = -32768;
+        samples[frame * 2U] = (int16_t)value;
+        samples[frame * 2U + 1U] = (int16_t)value;
+    }
+    return frames;
+}
+
+static int preview_buffer_slot(AudioOutBuffer *buffer, AudioOutBuffer buffers[2])
+{
+    if (buffer == &buffers[0]) return 0;
+    if (buffer == &buffers[1]) return 1;
+    return -1;
+}
+
+static bool queue_preview_buffer(AudioOutBuffer buffers[2], int slot,
+                                 bool pending[2], size_t *pending_count,
+                                 AudioOutBuffer **released)
+{
+    AudioOutBuffer *returned = NULL;
+    int returned_slot;
+    if (R_FAILED(audoutPlayBuffer(&buffers[slot], &returned))) return false;
+
+    pending[slot] = true;
+    (*pending_count)++;
+    if (returned) {
+        returned_slot = preview_buffer_slot(returned, buffers);
+        if (returned_slot >= 0 && pending[returned_slot]) {
+            pending[returned_slot] = false;
+            (*pending_count)--;
+        }
+    }
+    *released = returned;
+    return true;
+}
+
 int preview_mp3_trimmed(const char *input_path, int gain_db,
                         const AudioTrimOptions *trim,
                         char *error_text, size_t error_text_size)
@@ -47,7 +127,7 @@ int preview_mp3_trimmed(const char *input_path, int gain_db,
     uint64_t source_samples_seen = 0, trim_start_source = 0, trim_end_source = UINT64_MAX;
     bool reached_preview_limit = false;
     bool audio_initialized = false, started_here = false;
-    uint8_t *pcm_buffer = NULL;
+    uint8_t *pcm_buffers[2] = {NULL, NULL};
     double gain;
     mp3dec_t decoder;
     mp3dec_frame_info_t info;
@@ -136,26 +216,12 @@ int preview_mp3_trimmed(const char *input_path, int gain_db,
     if (!source_rate || !mono_count) { set_error(error_text, error_text_size, "No decodable MP3 audio frames."); goto cleanup; }
 
     gain = slidenx_normalized_gain(mono, mono_count, gain_db);
-    {
-        uint64_t fade_in_frames = trim ? ((uint64_t)trim->fade_in_ms * TARGET_RATE) / 1000U : 0U;
-        uint64_t fade_out_frames = trim ? ((uint64_t)trim->fade_out_ms * TARGET_RATE) / 1000U : 0U;
-        uint64_t trimmed_source_ms = ((uint64_t)mono_count * 1000U) / (uint64_t)source_rate;
-        uint64_t requested_ms = trim && trim->trim_end_ms > 0 && trim->trim_end_ms > trim->trim_start_ms
-                              ? trim->trim_end_ms - trim->trim_start_ms : UINT64_MAX;
-        bool fade_out_reaches_end = !reached_preview_limit ||
-                                    (requested_ms != UINT64_MAX && requested_ms <= trimmed_source_ms + 30U);
-        if (fade_in_frames > (uint64_t)mono_count * TARGET_RATE / (uint64_t)source_rate)
-            fade_in_frames = (uint64_t)mono_count * TARGET_RATE / (uint64_t)source_rate;
-        if (!fade_out_reaches_end) fade_out_frames = 0;
-        if (fade_out_frames > (uint64_t)mono_count * TARGET_RATE / (uint64_t)source_rate)
-            fade_out_frames = (uint64_t)mono_count * TARGET_RATE / (uint64_t)source_rate;
-        /* Stored below and applied after resampling. */
-        (void)fade_in_frames;
-        (void)fade_out_frames;
+    pcm_buffers[0] = (uint8_t *)memalign(0x1000, PCM_BUFFER_BYTES);
+    pcm_buffers[1] = (uint8_t *)memalign(0x1000, PCM_BUFFER_BYTES);
+    if (!pcm_buffers[0] || !pcm_buffers[1]) {
+        set_error(error_text, error_text_size, "Could not allocate aligned double audio buffers.");
+        goto cleanup;
     }
-
-    pcm_buffer = (uint8_t *)memalign(0x1000, PCM_BUFFER_BYTES);
-    if (!pcm_buffer) { set_error(error_text, error_text_size, "Could not allocate aligned audio buffer."); goto cleanup; }
 
     {
         Result rc = audoutInitialize();
@@ -171,55 +237,62 @@ int preview_mp3_trimmed(const char *input_path, int gain_db,
     {
         uint64_t scaled_count = (uint64_t)mono_count * TARGET_RATE;
         uint64_t total_frames = (scaled_count + (uint64_t)source_rate / 2U) / (uint64_t)source_rate;
+        AudioOutBuffer buffers[2];
+        bool pending[2] = {false, false};
+        size_t pending_count = 0;
+        uint64_t next_base = 0;
+        int next_slot = 0;
+        AudioOutBuffer *released = NULL;
 
-        for (uint64_t base = 0; base < total_frames; base += PCM_FRAMES_PER_BUFFER) {
-            size_t frames = (size_t)((total_frames - base) > PCM_FRAMES_PER_BUFFER ?
-                                     PCM_FRAMES_PER_BUFFER : (total_frames - base));
-            int16_t *samples = (int16_t *)pcm_buffer;
-            AudioOutBuffer audio = {0};
-            AudioOutBuffer *released = NULL;
+        memset(buffers, 0, sizeof(buffers));
 
-            for (size_t frame = 0; frame < frames; frame++) {
-                uint64_t i = base + frame;
-                uint64_t position = i * (uint64_t)source_rate;
-                uint64_t index = position / TARGET_RATE;
-                uint32_t fraction = (uint32_t)(position % TARGET_RATE);
-                int32_t first, second;
-                long value;
-                if (index >= mono_count) index = mono_count - 1U;
-                first = mono[index];
-                second = index + 1U < mono_count ? mono[index + 1U] : first;
-                double sample_value = ((double)first + ((double)second - first) * (double)fraction / TARGET_RATE) * gain;
-                uint64_t fade_in_frames = trim ? ((uint64_t)trim->fade_in_ms * TARGET_RATE) / 1000U : 0U;
-                uint64_t fade_out_frames = trim ? ((uint64_t)trim->fade_out_ms * TARGET_RATE) / 1000U : 0U;
-                uint64_t preview_frames = total_frames;
-                uint64_t trimmed_source_ms = ((uint64_t)mono_count * 1000U) / (uint64_t)source_rate;
-                uint64_t requested_ms = trim && trim->trim_end_ms > 0 && trim->trim_end_ms > trim->trim_start_ms
-                                      ? trim->trim_end_ms - trim->trim_start_ms : UINT64_MAX;
-                bool fade_out_reaches_end = !reached_preview_limit ||
-                                            (requested_ms != UINT64_MAX && requested_ms <= trimmed_source_ms + 30U);
-                if (!fade_out_reaches_end) fade_out_frames = 0;
-                if (fade_in_frames > preview_frames) fade_in_frames = preview_frames;
-                if (fade_out_frames > preview_frames) fade_out_frames = preview_frames;
-                if (fade_in_frames > 1U && i < fade_in_frames)
-                    sample_value *= (double)i / (double)(fade_in_frames - 1U);
-                if (fade_out_frames > 1U && i >= preview_frames - fade_out_frames)
-                    sample_value *= (double)(preview_frames - 1U - i) / (double)(fade_out_frames - 1U);
-                value = lrint(sample_value);
-                if (value > 32767) value = 32767;
-                if (value < -32768) value = -32768;
-                samples[frame * 2] = (int16_t)value;
-                samples[frame * 2 + 1] = (int16_t)value;
+        /* Prime the queue before waiting so the device always has audio ready. */
+        while (next_base < total_frames && pending_count < 2U) {
+            size_t frames = fill_preview_samples(pcm_buffers[next_slot], mono, mono_count,
+                                                 next_base, total_frames, source_rate, gain,
+                                                 trim, reached_preview_limit);
+            buffers[next_slot].buffer = pcm_buffers[next_slot];
+            buffers[next_slot].buffer_size = PCM_BUFFER_BYTES;
+            buffers[next_slot].data_size = frames * 2U * sizeof(int16_t);
+            buffers[next_slot].data_offset = 0;
+            if (!frames || !queue_preview_buffer(buffers, next_slot, pending,
+                                                  &pending_count, &released)) {
+                set_error(error_text, error_text_size, "Audio output rejected a preview buffer.");
+                goto cleanup;
             }
+            next_base += frames;
+            next_slot ^= 1;
+        }
 
-            audio.buffer = pcm_buffer;
-            audio.buffer_size = PCM_BUFFER_BYTES;
-            audio.data_size = frames * 2U * sizeof(int16_t);
-            audio.data_offset = 0;
-            if (R_FAILED(audoutPlayBuffer(&audio, &released))) {
-                set_error(error_text, error_text_size, "Audio output rejected the preview buffer."); goto cleanup;
+        while (next_base < total_frames || pending_count > 0U || released != NULL) {
+            int slot;
+            if (!released) wait_for_buffer(&released);
+            slot = preview_buffer_slot(released, buffers);
+            if (slot < 0) {
+                released = NULL;
+                continue;
             }
-            wait_for_buffer(&released);
+            if (pending[slot]) {
+                pending[slot] = false;
+                pending_count--;
+            }
+            released = NULL;
+
+            if (next_base < total_frames) {
+                size_t frames = fill_preview_samples(pcm_buffers[slot], mono, mono_count,
+                                                     next_base, total_frames, source_rate, gain,
+                                                     trim, reached_preview_limit);
+                buffers[slot].buffer = pcm_buffers[slot];
+                buffers[slot].buffer_size = PCM_BUFFER_BYTES;
+                buffers[slot].data_size = frames * 2U * sizeof(int16_t);
+                buffers[slot].data_offset = 0;
+                if (!frames || !queue_preview_buffer(buffers, slot, pending,
+                                                      &pending_count, &released)) {
+                    set_error(error_text, error_text_size, "Audio output rejected a preview buffer.");
+                    goto cleanup;
+                }
+                next_base += frames;
+            }
         }
     }
 
@@ -232,7 +305,8 @@ cleanup:
             (void)audoutStopAudioOut();
         audoutExit();
     }
-    free(pcm_buffer);
+    free(pcm_buffers[0]);
+    free(pcm_buffers[1]);
     free(mono);
     free(compressed);
     if (fp) fclose(fp);
