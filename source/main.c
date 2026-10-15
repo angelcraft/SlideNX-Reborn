@@ -16,6 +16,7 @@
 #define SOUNDS ROOT "/sounds"
 #define SETTINGS ROOT "/settings.ini"
 #define SETTINGS_TMP ROOT "/settings.ini.tmp"
+#define SETTINGS_BAK ROOT "/settings.ini.bak"
 #define LEGACY_IN ROOT "/IN.mp3"
 #define LEGACY_OUT ROOT "/OUT.mp3"
 #define OUTPUT_DIR ROOT "/output"
@@ -343,8 +344,20 @@ static bool save_settings(void)
         fclose(fp); (void)remove_if_exists(SETTINGS_TMP); return false;
     }
     if (fclose(fp) != 0) { (void)remove_if_exists(SETTINGS_TMP); return false; }
-    if (!remove_if_exists(SETTINGS) || rename(SETTINGS_TMP, SETTINGS) != 0) {
-        (void)remove_if_exists(SETTINGS_TMP); return false;
+    {
+        bool had_settings = exists(SETTINGS);
+        if (had_settings) {
+            if (!remove_if_exists(SETTINGS_BAK) || rename(SETTINGS, SETTINGS_BAK) != 0) {
+                (void)remove_if_exists(SETTINGS_TMP);
+                return false;
+            }
+        }
+        if (rename(SETTINGS_TMP, SETTINGS) != 0) {
+            if (had_settings) (void)rename(SETTINGS_BAK, SETTINGS);
+            (void)remove_if_exists(SETTINGS_TMP);
+            return false;
+        }
+        (void)remove_if_exists(SETTINGS_BAK);
     }
     return true;
 }
@@ -364,6 +377,7 @@ static uint32_t parse_ms_setting(const char *value, uint32_t maximum)
 static void load_settings(void)
 {
     FILE *fp = fopen(SETTINGS, "r");
+    if (!fp) fp = fopen(SETTINGS_BAK, "r");
     char line[384], connect[NAME_MAX_NX] = "", disconnect[NAME_MAX_NX] = "";
     int gain = 0;
     AudioTrimOptions connect_trim = {0}, disconnect_trim = {0};
@@ -661,7 +675,8 @@ static void convert_both(void)
         bool restore_in = restore_previous_output(RAW_IN, PREVIOUS_RAW_IN, old_in);
         bool restore_out = restore_previous_output(RAW_OUT, PREVIOUS_RAW_OUT, old_out);
         (void)remove_if_exists(TMP_IN); (void)remove_if_exists(TMP_OUT);
-        (void)remove_if_exists(PREVIOUS_RAW_IN); (void)remove_if_exists(PREVIOUS_RAW_OUT);
+        if (restore_in) (void)remove_if_exists(PREVIOUS_RAW_IN);
+        if (restore_out) (void)remove_if_exists(PREVIOUS_RAW_OUT);
         g_outputs_ready = false;
         snprintf(g_status, sizeof(g_status), "RAW pair save failed; rollback %s. Convert again before install.",
                  restore_in && restore_out ? "OK" : "FAILED");
