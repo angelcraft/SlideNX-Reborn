@@ -428,8 +428,12 @@ static void refresh_all(void)
     migrate_legacy();
     load_settings();
     g_outputs_ready = conversion_metadata_matches();
-    snprintf(g_status, sizeof(g_status), "Found %lu MP3 file(s). Settings loaded.",
-             (unsigned long)g_sound_count);
+    if (g_outputs_ready)
+        snprintf(g_status, sizeof(g_status), "Found %lu MP3 file(s). Current RAW outputs verified.",
+                 (unsigned long)g_sound_count);
+    else
+        snprintf(g_status, sizeof(g_status), "Found %lu MP3 file(s). Convert both sounds to validate outputs.",
+                 (unsigned long)g_sound_count);
 }
 
 static void open_picker(bool connect)
