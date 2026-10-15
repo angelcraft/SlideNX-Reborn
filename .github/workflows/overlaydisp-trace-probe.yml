@@ -1,0 +1,47 @@
+name: OverlayDisp Trace Probe (cloud build)
+on:
+  push:
+    branches: [trace/overlaydisp-gdbprobe]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-probe:
+    name: Build read-only Switch probe
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Compile NRO
+        shell: bash
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          export PATH="$DEVKITPRO/tools/bin:$DEVKITPRO/devkitA64/bin:$PATH"
+          make -C overlaydisp-trace-probe clean all
+          test -s overlaydisp-trace-probe/overlaydisp-trace-probe.nro
+          file overlaydisp-trace-probe/overlaydisp-trace-probe.nro || true
+          sha256sum overlaydisp-trace-probe/overlaydisp-trace-probe.nro
+      - name: Upload NRO and instructions
+        uses: actions/upload-artifact@v4
+        with:
+          name: OverlayDispTraceProbe-NRO
+          path: |
+            overlaydisp-trace-probe/overlaydisp-trace-probe.nro
+            overlaydisp-trace-probe/README.md
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve compiler output if build fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OverlayDispTraceProbe-build-diagnostics
+          path: |
+            overlaydisp-trace-probe/build/
+            overlaydisp-trace-probe/overlaydisp-trace-probe.elf
+            overlaydisp-trace-probe/overlaydisp-trace-probe.map
+          if-no-files-found: ignore
+          retention-days: 7
