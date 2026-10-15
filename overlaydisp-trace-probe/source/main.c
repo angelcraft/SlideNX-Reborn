@@ -350,6 +350,25 @@ static bool rsp_detach(int fd, unsigned long pid)
     return false;
 }
 
+static bool rsp_supports_vcont(int fd)
+{
+    char reply[PKT + 1];
+    if (!command(fd, "vCont?", reply, sizeof(reply))) {
+        logf1("Could not query vCont support; refusing to continue a system process unsafely.\n");
+        return false;
+    }
+    logf1("vCont support reply: %s\n", reply);
+    return strstr(reply, "vCont;c") != NULL;
+}
+
+static bool rsp_resume_process(int fd, unsigned long pid)
+{
+    char q[80];
+    (void)snprintf(q, sizeof(q), "vCont;c:p%lx.-1", pid);
+    logf1("Resume all overlayDisp threads: %s\n", q);
+    return send_packet(fd, q);
+}
+
 static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_base, PadState *pad)
 {
     uint64_t addr_a = module_base + SITE_A;
@@ -364,6 +383,18 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
           (unsigned long long)SITE_B, addr_b);
     logf1("Temporary runtime breakpoints only; no files on SD are patched.\n");
 
+    /* overlayDisp is multithreaded. Do not use legacy 'c': on this target it
+       can leave the system UI appearing frozen. Require vCont so we can resume
+       every thread in the process explicitly, and fail closed if unsupported. */
+    if (!rsp_supports_vcont(fd)) {
+        logf1("This GDB stub did not advertise vCont support; aborting before installing breakpoints.\n");
+        logf1("Detaching now to release overlayDisp rather than risk leaving it paused.\n");
+        save_log();
+        (void)rsp_detach(fd, pid);
+        snprintf(status_line, sizeof(status_line), "vCont unsupported; safely aborted and detached.");
+        return false;
+    }
+
     if (!rsp_breakpoint(fd, true, addr_a)) {
         logf1("Could not set breakpoint A; refusing to start trace.\n");
         (void)rsp_detach(fd, pid);
@@ -377,8 +408,8 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
     }
     save_log();
 
-    if (!send_packet(fd, "c")) {
-        logf1("Could not resume overlayDisp.\n");
+    if (!rsp_resume_process(fd, pid)) {
+        logf1("Could not resume all overlayDisp threads.\n");
         (void)rsp_breakpoint(fd, false, addr_a);
         (void)rsp_breakpoint(fd, false, addr_b);
         (void)rsp_detach(fd, pid);
@@ -474,8 +505,8 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
             finished = true;
             continue;
         }
-        if (!send_packet(fd, "c")) {
-            logf1("Could not resume after hit.\n");
+        if (!rsp_resume_process(fd, pid)) {
+            logf1("Could not resume all overlayDisp threads after hit.\n");
             finished = true;
             continue;
         }
