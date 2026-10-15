@@ -470,27 +470,22 @@ static void accept_picker(void)
     if (!g_sound_count || g_picker_cursor < 0 || (size_t)g_picker_cursor >= g_sound_count)
         return;
     if (g_ui_mode == UI_PICK_CONNECT) {
-        bool changed = strcasecmp(g_connect, g_sound_files[g_picker_cursor]) != 0;
         copy_name(g_connect, sizeof(g_connect), g_sound_files[g_picker_cursor]);
         g_connect[sizeof(g_connect) - 1] = '\0';
         /*
-         * Trim/fade values are source-specific. Never carry an old end point
-         * onto a newly selected file: it can make every replacement sound
-         * appear truncated at the same timestamp.
+         * Selecting a sound is an explicit request to use that file in full.
+         * Clear persisted trim/fade values even when re-selecting the same
+         * filename, so a stale trim endpoint cannot keep truncating it.
          */
-        if (changed) memset(&g_connect_trim, 0, sizeof(g_connect_trim));
-        snprintf(g_status, sizeof(g_status), changed
-                 ? "Connect sound set; trim/fades reset to full file: %.140s"
-                 : "Connect sound selected: %.170s", g_connect);
+        memset(&g_connect_trim, 0, sizeof(g_connect_trim));
+        snprintf(g_status, sizeof(g_status),
+                 "Connect sound selected; trim/fades reset to full file: %.140s", g_connect);
     } else {
-        bool changed = strcasecmp(g_disconnect, g_sound_files[g_picker_cursor]) != 0;
         copy_name(g_disconnect, sizeof(g_disconnect), g_sound_files[g_picker_cursor]);
         g_disconnect[sizeof(g_disconnect) - 1] = '\0';
-        /* See connect path above: disconnect trim settings belong to this file. */
-        if (changed) memset(&g_disconnect_trim, 0, sizeof(g_disconnect_trim));
-        snprintf(g_status, sizeof(g_status), changed
-                 ? "Disconnect sound set; trim/fades reset to full file: %.125s"
-                 : "Disconnect sound selected: %.155s", g_disconnect);
+        memset(&g_disconnect_trim, 0, sizeof(g_disconnect_trim));
+        snprintf(g_status, sizeof(g_status),
+                 "Disconnect sound selected; trim/fades reset to full file: %.125s", g_disconnect);
     }
     if (!save_settings())
         snprintf(g_status, sizeof(g_status), "Selection changed, but settings.ini could not be saved.");
