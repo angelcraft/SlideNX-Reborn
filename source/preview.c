@@ -298,6 +298,10 @@ int preview_mp3_trimmed(const char *input_path, int gain_db,
 
 cleanup:
     if (audio_initialized) {
+        if (result != 0) {
+            bool flushed = false;
+            (void)audoutFlushAudioOutBuffers(&flushed);
+        }
         if (started_here && audoutGetDeviceState() == AudioOutState_Started)
             (void)audoutStopAudioOut();
         audoutExit();
