@@ -39,12 +39,13 @@ static bool write_sample(PcmWriter *writer, int16_t sample)
 }
 
 int convert_mp3_to_raw(const char *input_path, const char *output_path,
-                       int gain_db, char *error_text, size_t error_text_size)
+                       int gain_db, const AudioTrimOptions *trim,
+                       char *error_text, size_t error_text_size)
 {
     FILE *input = NULL, *output = NULL;
     uint8_t *compressed = NULL;
     int16_t *mono = NULL;
-    size_t mono_count = 0, mono_capacity = 0;
+    size_t mono_count = 0, mono_capacity = 0, trim_start = 0, trim_end = 0, trimmed_count = 0;
     long file_size;
     size_t got;
     int offset = 0, source_rate = 0, result = -1;
@@ -114,14 +115,23 @@ int convert_mp3_to_raw(const char *input_path, const char *output_path,
 
     if (!source_rate || !mono_count) { set_error(error_text, error_text_size, "No valid MP3 audio frames decoded."); goto cleanup; }
 
-    gain = slidenx_normalized_gain(mono, mono_count, gain_db);
+    trim_start = trim ? (size_t)(((uint64_t)trim->trim_start_ms * source_rate) / 1000U) : 0U;
+    trim_end = (trim && trim->trim_end_ms > 0)
+             ? (size_t)(((uint64_t)trim->trim_end_ms * source_rate) / 1000U) : mono_count;
+    if (trim_start > mono_count) trim_start = mono_count;
+    if (trim_end > mono_count) trim_end = mono_count;
+    if (trim_end <= trim_start) {
+        set_error(error_text, error_text_size, "Trim end must be after trim start."); goto cleanup;
+    }
+    trimmed_count = trim_end - trim_start;
+    gain = slidenx_normalized_gain(mono + trim_start, trimmed_count, gain_db);
     output = fopen(output_path, "wb");
     if (!output) { set_error(error_text, error_text_size, "Could not create RAW output."); goto cleanup; }
     memset(&writer, 0, sizeof(writer));
     writer.file = output;
 
     {
-        uint64_t total = (uint64_t)mono_count * TARGET_RATE;
+        uint64_t total = (uint64_t)trimmed_count * TARGET_RATE;
         uint64_t output_count = (total + (uint64_t)source_rate / 2U) / (uint64_t)source_rate;
         for (uint64_t i = 0; i < output_count; i++) {
             uint64_t position = i * (uint64_t)source_rate;
@@ -130,11 +140,22 @@ int convert_mp3_to_raw(const char *input_path, const char *output_path,
             int32_t first, second;
             double value;
             long scaled;
-            if (index >= mono_count) index = mono_count - 1U;
-            first = mono[index];
-            second = index + 1U < mono_count ? mono[index + 1U] : first;
+            if (index >= trimmed_count) index = trimmed_count - 1U;
+            first = mono[trim_start + (size_t)index];
+            second = index + 1U < trimmed_count ? mono[trim_start + (size_t)index + 1U] : first;
             value = (double)first + ((double)second - first) * (double)fraction / TARGET_RATE;
-            scaled = lrint(value * gain);
+            {
+                double envelope = 1.0;
+                uint64_t fade_in_frames = trim ? ((uint64_t)trim->fade_in_ms * TARGET_RATE) / 1000U : 0U;
+                uint64_t fade_out_frames = trim ? ((uint64_t)trim->fade_out_ms * TARGET_RATE) / 1000U : 0U;
+                if (fade_in_frames > output_count) fade_in_frames = output_count;
+                if (fade_out_frames > output_count) fade_out_frames = output_count;
+                if (fade_in_frames > 1U && i < fade_in_frames)
+                    envelope *= (double)i / (double)(fade_in_frames - 1U);
+                if (fade_out_frames > 1U && i >= output_count - fade_out_frames)
+                    envelope *= (double)(output_count - 1U - i) / (double)(fade_out_frames - 1U);
+                scaled = lrint(value * gain * envelope);
+            }
             if (scaled > 32767) scaled = 32767;
             if (scaled < -32768) scaled = -32768;
             if (!write_sample(&writer, (int16_t)scaled)) {
