@@ -22,13 +22,15 @@ static void set_error(char *text, size_t size, const char *message)
     if (text && size) (void)snprintf(text, size, "%s", message);
 }
 
-static void wait_for_buffer(AudioOutBuffer **released)
+static void wait_for_buffer(AudioOutBuffer **released, u32 *released_count)
 {
-    u32 count = 0;
     while (*released == NULL) {
-        Result rc = audoutWaitPlayFinish(released, &count, 100000000ULL);
-        if (R_FAILED(rc))
+        *released_count = 0;
+        Result rc = audoutWaitPlayFinish(released, released_count, 100000000ULL);
+        if (R_FAILED(rc)) {
+            *released_count = 0;
             svcSleepThread(1000000ULL);
+        }
     }
 }
 
@@ -255,13 +257,19 @@ int preview_mp3_trimmed(const char *input_path, int gain_db,
 
         while (next_base < total_frames || pending_count > 0U) {
             int slot;
-            if (!released) wait_for_buffer(&released);
+            u32 released_count = 0;
+            if (!released) wait_for_buffer(&released, &released_count);
             slot = preview_buffer_slot(released, buffers);
             if (slot < 0) {
                 released = NULL;
                 continue;
             }
-            if (pending[slot]) {
+            if (released_count > 1U) {
+                /* Both queued blocks may have completed while the app was busy. */
+                pending[0] = false;
+                pending[1] = false;
+                pending_count = 0;
+            } else if (pending[slot]) {
                 pending[slot] = false;
                 pending_count--;
             }
