@@ -245,7 +245,7 @@ static bool hash_source_file(uint64_t *hash, const char *name)
 /* Includes selected filenames, source size/mtime, gain, trim and fade settings. */
 static bool current_source_signature(char *output, size_t output_size)
 {
-    uint64_t hash = 1469598103934665603ULL;
+    uint64_t hash = 14695981039346656037ULL;
     int n;
     if (!output || output_size < 17U ||
         !hash_source_file(&hash, g_connect) ||
