@@ -1,4 +1,5 @@
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -540,8 +541,9 @@ static void adjust_audio_lab(int delta)
         case 0:
             current = (int64_t)options->trim_start_ms + (int64_t)delta * 50;
             maximum = (int64_t)duration - 50;
-            if (options->trim_end_ms && maximum > (int64_t)options->trim_end_ms - 250)
+            if (options->trim_end_ms && maximum > (int64_t)options->trim_end_ms - 50)
                 maximum = (int64_t)options->trim_end_ms - 50;
+            if (maximum < 0) maximum = 0;
             if (current < 0) current = 0;
             if (current > maximum) current = maximum;
             options->trim_start_ms = (uint32_t)current;
@@ -682,15 +684,22 @@ static void convert_both(void)
                  restore_in && restore_out ? "OK" : "FAILED");
         return;
     }
-    (void)remove_if_exists(PREVIOUS_RAW_IN);
-    (void)remove_if_exists(PREVIOUS_RAW_OUT);
     if (!regular_nonempty(RAW_IN) || !regular_nonempty(RAW_OUT) ||
         !write_conversion_metadata(initial_signature)) {
+        bool restore_in, restore_out;
         (void)remove_if_exists(CONVERSION_META);
+        (void)remove_if_exists(CONVERSION_META_TMP);
+        restore_in = restore_previous_output(RAW_IN, PREVIOUS_RAW_IN, old_in);
+        restore_out = restore_previous_output(RAW_OUT, PREVIOUS_RAW_OUT, old_out);
+        if (restore_in) (void)remove_if_exists(PREVIOUS_RAW_IN);
+        if (restore_out) (void)remove_if_exists(PREVIOUS_RAW_OUT);
         g_outputs_ready = false;
-        snprintf(g_status, sizeof(g_status), "RAWs saved, but validation metadata failed; convert again before install.");
+        snprintf(g_status, sizeof(g_status), "Validation metadata failed; rollback %s. Convert again before install.",
+                 restore_in && restore_out ? "OK" : "FAILED");
         return;
     }
+    (void)remove_if_exists(PREVIOUS_RAW_IN);
+    (void)remove_if_exists(PREVIOUS_RAW_OUT);
     g_outputs_ready = true;
     (void)save_settings();
     snprintf(g_status, sizeof(g_status), "Auto-normalized both sounds; manual gain %s%d dB. Not installed yet.",
