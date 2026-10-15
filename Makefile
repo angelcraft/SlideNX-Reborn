@@ -38,7 +38,7 @@ export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) $(foreach dir,$(
 export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 export APP_TITLE := SlideNX Reborn
 export APP_AUTHOR := Angelcraft
-export APP_VERSION := 2.6.0
+export APP_VERSION := 2.7.0
 .PHONY: all clean
 all: $(BUILD)
 $(BUILD):
