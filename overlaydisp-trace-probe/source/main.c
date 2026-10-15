@@ -125,38 +125,37 @@ static bool read_byte(int fd, char *c)
 static bool read_packet(int fd, char *out, size_t cap)
 {
     char c;
+    char raw[PKT + 1];
     do { if (!read_byte(fd, &c)) return false; } while (c != '$');
     size_t n = 0;
     while (true) {
         if (!read_byte(fd, &c)) return false;
         if (c == '#') break;
-        if (n + 1 < cap) out[n++] = c;
+        if (n + 1 < sizeof(raw)) raw[n++] = c;
     }
     char h;
     if (!read_byte(fd, &h) || !read_byte(fd, &h)) return false;
-    out[n] = 0;
+    raw[n] = 0;
     (void)send(fd, "+", 1, 0);
 
     /* GDB RSP run-length encoding: e.g. "0*," expands to sixteen '0' chars.
-       Decode in place after consuming the checksum of the compressed payload. */
-    size_t read_pos = 0, write_pos = 0;
-    while (read_pos < n) {
-        if (out[read_pos] == '*' && write_pos > 0 && read_pos + 1 < n) {
-            unsigned char count_char = (unsigned char)out[read_pos + 1];
+       Decode from a separate raw buffer, so expansion cannot overwrite unread bytes. */
+    size_t rpos = 0, wpos = 0;
+    while (rpos < n && wpos + 1 < cap) {
+        if (raw[rpos] == '*' && wpos > 0 && rpos + 1 < n) {
+            unsigned char count_char = (unsigned char)raw[rpos + 1];
             if (count_char >= 32) {
                 size_t repeat = (size_t)(count_char - 29);
-                char previous = out[write_pos - 1];
-                read_pos += 2;
-                while (repeat-- > 0 && write_pos + 1 < cap)
-                    out[write_pos++] = previous;
+                char previous = out[wpos - 1];
+                rpos += 2;
+                while (repeat-- > 0 && wpos + 1 < cap)
+                    out[wpos++] = previous;
                 continue;
             }
         }
-        char value = out[read_pos++];
-        if (write_pos + 1 < cap)
-            out[write_pos++] = value;
+        out[wpos++] = raw[rpos++];
     }
-    out[write_pos] = 0;
+    out[wpos] = 0;
     return true;
 }
 static bool send_packet(int fd, const char *p)
@@ -313,10 +312,10 @@ static bool rsp_select_general_thread(int fd, const char *thread)
     char q[96], reply[PKT + 1];
     (void)snprintf(q, sizeof(q), "Hg%s", thread);
     if (!command(fd, q, reply, sizeof(reply))) {
-        logf1("Selecting general thread %s timed out.\\n", thread);
+        logf1("Selecting general thread %s timed out.\n", thread);
         return false;
     }
-    logf1("Selected general thread %s: %s\\n", thread, reply);
+    logf1("Selected general thread %s: %s\n", thread, reply);
     return strcmp(reply, "OK") == 0;
 }
 
@@ -708,14 +707,14 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
         char hit_thread[64];
         if (!get_stopped_thread(reply, hit_thread, sizeof(hit_thread))) {
             ++other_stops;
-            logf1("Stop reply did not identify a thread; refusing ambiguous register reads: %s\\n", reply);
+            logf1("Stop reply did not identify a thread; refusing ambiguous register reads: %s\n", reply);
             save_log();
             finished = true;
             continue;
         }
         if (!rsp_select_general_thread(fd, hit_thread)) {
             ++other_stops;
-            logf1("Could not select stopped thread %s; aborting trace.\\n", hit_thread);
+            logf1("Could not select stopped thread %s; aborting trace.\n", hit_thread);
             save_log();
             finished = true;
             continue;
@@ -758,7 +757,7 @@ static bool trace_jointout_routes(int fd, unsigned long pid, uint64_t module_bas
             finished = true;
             continue;
         }
-        logf1("Hit thread: %s\\n", hit_thread);
+        logf1("Hit thread: %s\n", hit_thread);
         target_stopped = false;
         if (!rsp_single_step_thread(fd, hit_thread, reply, sizeof(reply))) {
             logf1("Single-step over callsite failed; target state is uncertain; cleanup will attempt to stop it first.\n");
