@@ -203,32 +203,104 @@ static bool find_overlaydisp_pid(const char *xml, unsigned *pid_out)
     return false;
 }
 
+static bool is_hex_string(const char *s)
+{
+    size_t n = strlen(s);
+    if (!n || (n & 1U)) return false;
+    for (size_t i = 0; i < n; ++i) {
+        const char c = s[i];
+        if (!((c >= '0' && c <= '9') ||
+              (c >= 'a' && c <= 'f') ||
+              (c >= 'A' && c <= 'F'))) return false;
+    }
+    return true;
+}
+
+static bool decode_hex_text(const char *hex, char *out, size_t cap)
+{
+    size_t n = strlen(hex);
+    if (!out || cap == 0 || !is_hex_string(hex) || n / 2 >= cap) return false;
+    for (size_t i = 0; i < n / 2; ++i) {
+        char pair[3] = {hex[i * 2], hex[i * 2 + 1], 0};
+        char *end = NULL;
+        unsigned long v = strtoul(pair, &end, 16);
+        if (end == pair || *end || v > 255) return false;
+        out[i] = (char)v;
+    }
+    out[n / 2] = '\0';
+    return true;
+}
+
 static bool rsp_monitor_get_info(char *text, size_t cap)
 {
-    static const char encoded[] = "67657420696e666f"; /* Atmosphere monitor command: get info */
+    static const char encoded[] = "67657420696e666f"; /* "get info" */
     char cmd[96];
-    size_t used = 0;
+    if (!text || cap == 0) return false;
+    text[0] = '\0';
+
     snprintf(cmd, sizeof(cmd), "qRcmd,%s", encoded);
-    if (!rsp_send(cmd)) return false;
+    if (!rsp_send(cmd)) {
+        log_line("monitor get info: failed to send qRcmd request.");
+        return false;
+    }
+
+    size_t used = 0;
     for (unsigned packets = 0; packets < 128 && used + 1 < cap; ++packets) {
         char reply[RX_CAP];
-        if (read_packet(reply, sizeof(reply)) != 1) return false;
-        if (strcmp(reply, "OK") == 0) {
-            text[used] = '\0';
-            return true;
-        }
-        if (reply[0] == 'O') {
-            const char *p = reply + 1;
-            while (p[0] && p[1] && used + 1 < cap) {
-                char hex[3] = {p[0], p[1], 0};
-                text[used++] = (char)strtoul(hex, NULL, 16);
-                p += 2;
-            }
-            text[used] = '\0';
-        } else if (reply[0] == 'E') {
+        if (read_packet(reply, sizeof(reply)) != 1) {
+            log_line("monitor get info: timed out or malformed response after %u packet(s).", packets);
             return false;
         }
+
+        if (strcmp(reply, "OK") == 0) {
+            text[used] = '\0';
+            if (!used) log_line("monitor get info: stub returned OK without any output.");
+            return used > 0;
+        }
+
+        if (reply[0] == 'E') {
+            log_line("monitor get info: stub returned error packet '%s'.", reply);
+            return false;
+        }
+
+        /* Standard GDB RSP console output: O followed by hex-encoded bytes. */
+        if (reply[0] == 'O' && is_hex_string(reply + 1)) {
+            char decoded[RX_CAP];
+            if (!decode_hex_text(reply + 1, decoded, sizeof(decoded))) {
+                log_line("monitor get info: couldn't decode standard O packet.");
+                return false;
+            }
+            size_t n = strlen(decoded);
+            if (n > cap - used - 1) n = cap - used - 1;
+            memcpy(text + used, decoded, n);
+            used += n;
+            text[used] = '\0';
+            continue;
+        }
+
+        /*
+         * Atmosphere's standalone GDB stub currently hex-encodes the entire
+         * monitor output directly in qRcmd's reply (without the standard
+         * leading 'O' packet marker / trailing 'OK'). Accept that form too.
+         */
+        if (is_hex_string(reply)) {
+            if (!decode_hex_text(reply, text, cap)) {
+                log_line("monitor get info: couldn't decode Atmosphere's raw hex reply.");
+                return false;
+            }
+            used = strlen(text);
+            log_line("monitor get info: decoded Atmosphere raw-hex qRcmd response (%u chars).",
+                     (unsigned)used);
+            return used > 0;
+        }
+
+        log_line("monitor get info: unexpected RSP reply '%.*s'.",
+                 160, reply);
+        return false;
     }
+
+    text[used] = '\0';
+    log_line("monitor get info: response did not terminate within the packet/output limit.");
     return false;
 }
 
