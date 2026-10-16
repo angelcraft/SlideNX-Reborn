@@ -1,0 +1,54 @@
+name: OverlayDisp JointOut Runtime Probe
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "jointout-runtime-probe/**"
+      - ".github/workflows/jointout-runtime-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-runtime-probe:
+    name: Build read-only runtime probe NRO
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile probe
+        shell: bash
+        run: |
+          export DEVKITPRO=/opt/devkitpro
+          export PATH="$DEVKITPRO/tools/bin:$DEVKITPRO/devkitA64/bin:$PATH"
+          make -C jointout-runtime-probe clean all
+          test -s jointout-runtime-probe/jointout-runtime-probe.nro
+          file jointout-runtime-probe/jointout-runtime-probe.nro || true
+          sha256sum jointout-runtime-probe/jointout-runtime-probe.nro
+
+      - name: Upload probe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OverlayDisp-JointOut-Runtime-Probe
+          path: |
+            jointout-runtime-probe/jointout-runtime-probe.nro
+            jointout-runtime-probe/README.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Preserve build diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OverlayDisp-JointOut-Probe-Build-Diagnostics
+          path: |
+            jointout-runtime-probe/build/
+            jointout-runtime-probe/jointout-runtime-probe.elf
+            jointout-runtime-probe/jointout-runtime-probe.map
+          if-no-files-found: ignore
+          retention-days: 7
