@@ -720,17 +720,44 @@ static bool is_stop_reply(const char *reply)
 
 static bool wait_stop(char *reply, size_t cap)
 {
+    unsigned ignored_ok = 0;
+    unsigned unexpected = 0;
+
     while (!g_cancelled) {
         int rc = read_packet(reply, cap);
         if (rc == 1) {
-            if (is_stop_reply(reply)) g_target_stopped = true;
-            return true;
+            /*
+             * Atmosphere responds to vCont;c with a framed "OK" as soon as
+             * the continue request is accepted. That is NOT a stop event.
+             * Keep waiting for the asynchronous T/S stop packet instead of
+             * returning to the caller and sending another vCont;c.
+             */
+            if (strcmp(reply, "OK") == 0) {
+                if (ignored_ok++ == 0)
+                    log_line("Continue acknowledged by Atmosphere; waiting for the actual stop event.");
+                consoleUpdate(NULL);
+                try_cancel_from_controller();
+                continue;
+            }
+
+            if (is_stop_reply(reply)) {
+                g_target_stopped = true;
+                return true;
+            }
+
+            if (unexpected++ < 3)
+                log_line("Ignoring non-stop RSP packet while waiting: %.100s", reply);
+            consoleUpdate(NULL);
+            try_cancel_from_controller();
+            continue;
         }
+
         if (rc < 0) {
             log_line("Debugger connection closed or malformed RSP packet.");
             return false;
         }
-        /* Keep the Homebrew applet UI alive while waiting for RSP data. */
+
+        /* Timeouts are normal while the target continues running. */
         consoleUpdate(NULL);
         try_cancel_from_controller();
     }
