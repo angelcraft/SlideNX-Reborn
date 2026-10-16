@@ -52,6 +52,8 @@ static void log_line(const char *fmt, ...)
     vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
     printf("%s\n", line);
+    /* libnx's console is not visible until it is explicitly refreshed. */
+    consoleUpdate(NULL);
     if (g_log) {
         fprintf(g_log, "%s\n", line);
         fflush(g_log);
@@ -728,6 +730,8 @@ static bool wait_stop(char *reply, size_t cap)
             log_line("Debugger connection closed or malformed RSP packet.");
             return false;
         }
+        /* Keep the Homebrew applet UI alive while waiting for RSP data. */
+        consoleUpdate(NULL);
         try_cancel_from_controller();
     }
     return false;
