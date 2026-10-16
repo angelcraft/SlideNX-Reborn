@@ -376,6 +376,8 @@ static bool continue_process(void)
     return true;
 }
 
+static void set_socket_timeout_ms(int fd, long milliseconds);
+
 /* Stop overlayDisp before removing traps. If a real stop cannot be confirmed,
  * do not issue breakpoint-removal or detach commands while it may be running. */
 static bool interrupt_and_wait_for_stop(void)
