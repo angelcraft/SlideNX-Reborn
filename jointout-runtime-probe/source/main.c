@@ -418,6 +418,49 @@ static void remove_all_breakpoints(void)
     if (g_watchpoint_active && g_slot) { remove_write_watchpoint(g_slot); g_watchpoint_active = false; }
 }
 
+static bool validate_target_code(void)
+{
+    struct Signature {
+        uint64_t offset;
+        uint32_t expected;
+        const char *label;
+    };
+    /* Instruction words from the exact original NSO supplied for this audit.
+       Read live memory and fail closed if this isn't the expected build. */
+    static const struct Signature signatures[] = {
+        {0x356868ULL, 0xb9401129U, "resource byte-size load (LDR W9,[X9,#0x10])"},
+        {0x35686cULL, 0xd341fd29U, "resource sample-count shift (LSR X9,X9,#1)"},
+        {0x3568ccULL, 0xa9434ff4U, "voice-slot setup epilogue"},
+        {0x356fe4ULL, 0x3940f008U, "voice end handler"}
+    };
+    for (size_t i = 0; i < sizeof(signatures) / sizeof(signatures[0]); ++i) {
+        unsigned char raw[4];
+        if (!read_mem(g_base + signatures[i].offset, raw, sizeof(raw))) {
+            log_line("BUILD CHECK FAILED: cannot read instruction at module+0x%llx (%s).",
+                     (unsigned long long)signatures[i].offset, signatures[i].label);
+            return false;
+        }
+        uint32_t actual = (uint32_t)raw[0] | ((uint32_t)raw[1] << 8) |
+                         ((uint32_t)raw[2] << 16) | ((uint32_t)raw[3] << 24);
+        if (actual != signatures[i].expected) {
+            log_line("BUILD CHECK FAILED at module+0x%llx: expected %08x, got %08x. Refusing to set breakpoints.",
+                     (unsigned long long)signatures[i].offset,
+                     signatures[i].expected, actual);
+            return false;
+        }
+        log_line("BUILD CHECK OK module+0x%llx: %08x (%s)",
+                 (unsigned long long)signatures[i].offset, actual, signatures[i].label);
+    }
+    char cue[32];
+    if (!read_string(g_base + 0x38f80dULL, cue, sizeof(cue)) ||
+        strcmp(cue, "SeJointOut") != 0) {
+        log_line("BUILD CHECK FAILED: expected SeJointOut string is not at module+0x38f80d. Refusing to set breakpoints.");
+        return false;
+    }
+    log_line("BUILD CHECK OK: SeJointOut label at module+0x38f80d.");
+    return true;
+}
+
 static void set_socket_timeout_ms(int fd, long milliseconds)
 {
     struct timeval tv;
@@ -573,6 +616,7 @@ static bool attach_debugger(void)
         return false;
     }
     log_line("overlayDisp module base: 0x%llx", (unsigned long long)g_base);
+    if (!validate_target_code()) return false;
     return true;
 }
 
