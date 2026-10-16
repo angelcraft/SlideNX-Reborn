@@ -96,7 +96,36 @@ static int read_packet(char *out, size_t cap)
     for (;;) {
         rc = read_byte(&c);
         if (rc <= 0) return rc;
-        if (c == '
+        if (c == '$') break;
+    }
+    for (;;) {
+        rc = read_byte(&c);
+        if (rc <= 0) return -1;
+        if (c == '#') break;
+        if (raw_used < RX_CAP) raw[raw_used++] = c;
+    }
+    if (read_byte(&checksum1) != 1 || read_byte(&checksum2) != 1) return -1;
+    raw[raw_used] = '\0';
+    (void)checksum1;
+    (void)checksum2;
+    (void)send_all("+", 1);
+
+    size_t pos = 0;
+    while (pos < raw_used && out_used + 1 < cap) {
+        if (raw[pos] == '*' && out_used > 0 && pos + 1 < raw_used &&
+            (unsigned char)raw[pos + 1] >= 32 && (unsigned char)raw[pos + 1] <= 126) {
+            size_t repeats = (size_t)((unsigned char)raw[pos + 1] - 29);
+            const char previous = out[out_used - 1];
+            pos += 2;
+            while (repeats-- > 0 && out_used + 1 < cap)
+                out[out_used++] = previous;
+        } else {
+            out[out_used++] = raw[pos++];
+        }
+    }
+    out[out_used] = '\0';
+    return 1;
+}
 static bool rsp_send(const char *payload)
 {
     char frame[RX_CAP + 64];
