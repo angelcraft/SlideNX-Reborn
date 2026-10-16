@@ -252,6 +252,18 @@ static bool read_reg(unsigned regno, uint64_t *value)
     return true;
 }
 
+static bool write_reg(unsigned regno, uint64_t value)
+{
+    char cmd[96];
+    snprintf(cmd, sizeof(cmd), "P%x=%02x%02x%02x%02x%02x%02x%02x%02x",
+             regno,
+             (unsigned)(value & 0xff), (unsigned)((value >> 8) & 0xff),
+             (unsigned)((value >> 16) & 0xff), (unsigned)((value >> 24) & 0xff),
+             (unsigned)((value >> 32) & 0xff), (unsigned)((value >> 40) & 0xff),
+             (unsigned)((value >> 48) & 0xff), (unsigned)((value >> 56) & 0xff));
+    return rsp_ok(cmd);
+}
+
 static bool read_mem(uint64_t addr, void *buffer, size_t len)
 {
     char cmd[96], reply[RX_CAP];
@@ -578,9 +590,16 @@ static bool on_breakpoint(uint64_t expected_pc, char *label, size_t label_cap,
                           uint64_t *x8, uint64_t *x9, uint64_t *x21,
                           uint64_t *x23, uint64_t *pc)
 {
-    if (!read_reg(32, pc) || !read_reg(8, x8) || !read_reg(9, x9) ||
-        !read_reg(0x15, x21) || !read_reg(0x17, x23)) return false;
+    if (!read_reg(32, pc)) return false;
+    /* Some GDB stubs report the PC just after a software BRK. Rewind it so
+       the replaced original instruction still executes after trap removal. */
+    if (*pc == expected_pc + 4) {
+        if (!write_reg(32, expected_pc)) return false;
+        *pc = expected_pc;
+    }
     if (*pc != expected_pc) return false;
+    if (!read_reg(8, x8) || !read_reg(9, x9) ||
+        !read_reg(0x15, x21) || !read_reg(0x17, x23)) return false;
     if (!read_string(*x21, label, label_cap)) return false;
     return true;
 }
@@ -674,6 +693,13 @@ static bool do_runtime_trace(void)
                 continue_process();
                 continue;
             }
+            if (pc == init_pc + 4) {
+                if (!write_reg(32, init_pc)) {
+                    log_line("Could not rewind PC at slot-init breakpoint.");
+                    return false;
+                }
+                pc = init_pc;
+            }
             if (pc == init_pc && read_string(x21, label, sizeof(label)) && strcmp(label, "SeJointOut") == 0) {
                 g_slot = x23;
                 g_have_slot = true;
@@ -709,6 +735,10 @@ static bool do_runtime_trace(void)
             uint64_t current_pc = 0, x0 = 0;
             (void)read_reg(32, &current_pc);
             (void)read_reg(0, &x0);
+            if (current_pc == end_pc + 4 && x0 == g_slot) {
+                if (write_reg(32, end_pc)) current_pc = end_pc;
+                else log_line("Could not rewind PC at voice-end breakpoint.");
+            }
             if (current_pc == end_pc && x0 == g_slot) {
                 uint32_t state = 0;
                 uint64_t count = 0, cursor = 0, data = 0;
